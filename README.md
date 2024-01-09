@@ -4,6 +4,8 @@
 
 Implementation of CALM from the paper <a href="https://arxiv.org/abs/2401.02412">LLM Augmented LLMs: Expanding Capabilities through Composition</a>, out of Google Deepmind
 
+<a href="https://discord.gg/Vmm5nrMZWc">Temporary discord discussion</a>
+
 ## Citations
 
 ```bibtex
