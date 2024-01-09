@@ -4,6 +4,10 @@ from torch.nn import Module
 
 from einops import rearrange, repeat
 
+from x_transformers import (
+    Attention
+)
+
 # helpers
 
 def exists(v):

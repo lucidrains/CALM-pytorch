@@ -17,7 +17,9 @@ setup(
   ],
   install_requires=[
     'einops>=0.7.0',
-    'torch>=2.0'
+    'pytorch-custom-utils>=0.0.9',
+    'torch>=2.0',
+    'x-transformers>=1.27.3'
   ],
   classifiers=[
     'Development Status :: 4 - Beta',
