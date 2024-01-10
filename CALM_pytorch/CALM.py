@@ -57,6 +57,8 @@ class Recorder:
 
     def pop_saved(self):
         output = self.output
+        assert exists(output)
+        self.output = None
         return output
 
 # cross attention wrapper class
@@ -67,6 +69,7 @@ class CrossAttentionBlock(Module):
         self,
         dim,
         dim_context,
+        recorder: Recorder,
         linear_project_context = True,  # in the paper, they do a projection on the augmented hidden states. not sure if this is needed though, but better to be accurate first
         pre_rmsnorm = False,
         **kwargs
@@ -74,6 +77,7 @@ class CrossAttentionBlock(Module):
         super().__init__()
         self.pre_rmsnorm = RMSNorm(dim) if pre_rmsnorm else nn.Identity()
 
+        self.recorder = recorder
         self.context_proj = None
 
         if linear_project_context:
@@ -82,8 +86,9 @@ class CrossAttentionBlock(Module):
 
         self.attn = Attention(dim = dim, dim_context = dim_context, **kwargs)
 
-    def forward(self, x, context):
+    def forward(self, _, __, x):
 
+        context = self.recorder.pop_saved()
         maybe_enable_grad = torch.enable_grad if self.training else nullcontext
 
         with maybe_enable_grad():
@@ -109,6 +114,7 @@ class CALM(Module):
         augment_llm: Module,
         augment_every_num_layers = 4,  # in the paper, they do 4
         attn_kwargs: dict = dict(
+            linear_project_context = True,
             pre_rmsnorm = True,
             flash = True
         ),
@@ -152,14 +158,15 @@ class CALM(Module):
         self.cross_attns = ModuleList([])
 
         for _ in range(num_cross_attns):
-            self.recorders.append(Recorder())
-            self.cross_attns.append(CrossAttentionBlock(dim = dim_anchor, dim_context = dim_augment, **attn_kwargs))
+            recorder = Recorder()
+            self.recorders.append(recorder)
+            self.cross_attns.append(CrossAttentionBlock(dim = dim_anchor, dim_context = dim_augment, recorder = recorder, **attn_kwargs))
 
         # connect the two models
 
         for anchor_block, recorder, cross_attn, augment_block in zip(anchor_blocks_to_hook, self.recorders, self.cross_attns, augment_blocks_to_hook):
             augment_block.register_forward_hook(recorder)
-            anchor_block.register_forward_hook(lambda _, __, output: cross_attn(output, recorder.pop_saved()))
+            anchor_block.register_forward_hook(cross_attn)
 
         # cross entropy loss related
 
