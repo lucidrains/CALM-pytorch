@@ -235,7 +235,8 @@ class CALM(Module):
             x, labels = x[:, :-1], x[:, 1:]
 
             if exists(mask):
-                labels = labels.masked_fill(~mask[:, 1:], self.pad_id)
+                mask = mask[:, 1:] & labels != self.pad_id
+                labels = labels.masked_fill(~mask, self.pad_id)
 
         prompt_mask = prompt != self.pad_id
 
