@@ -120,8 +120,6 @@ class CALM(Module):
     @beartype
     def __init__(
         self,
-        dim_anchor: int,
-        dim_augment: int,
         anchor_llm: Module,
         augment_llm: Module,
         augment_every_num_layers = 4,  # in the paper, they do 4
@@ -174,12 +172,34 @@ class CALM(Module):
 
         num_cross_attns = min(len(augment_blocks_to_hook), len(anchor_blocks_to_hook))
 
+        # use forward hook to automatically figure out model dimensions for augment and anchor models
+
+        anchor_dims = []
+        augment_dims = []
+
+        temp_hooks = []
+        get_anchor_dims = lambda _, __, out: anchor_dims.append(out.shape[-1])
+        get_augment_dims = lambda _, __, out: augment_dims.append(out.shape[-1])
+
+        for anchor_block, augment_block in zip(anchor_blocks_to_hook, augment_blocks_to_hook):
+            temp_hooks.append(anchor_block.register_forward_hook(get_anchor_dims))
+            temp_hooks.append(augment_block.register_forward_hook(get_augment_dims))
+
+        dummy_input = torch.ones((1, 1), dtype = torch.long)
+        self.anchor_llm(dummy_input)
+        self.augment_llm(dummy_input)
+
+        # unregister temporary hooks
+
+        for hook in temp_hooks:
+            hook.remove()
+
         # instantiate cross attentions
 
         self.recorders = []
         self.cross_attns = ModuleList([])
 
-        for _ in range(num_cross_attns):
+        for dim_anchor, dim_augment, _ in zip(anchor_dims, augment_dims, range(num_cross_attns)):
             recorder = Recorder()
             self.recorders.append(recorder)
             self.cross_attns.append(CrossAttentionBlock(dim = dim_anchor, dim_context = dim_augment, recorder = recorder, **attn_kwargs))

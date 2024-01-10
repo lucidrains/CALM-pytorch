@@ -46,18 +46,19 @@ anchor_llm = TransformerWrapper(
     )
 )
 
+# import CALM wrapper
+
 from CALM_pytorch import CALM
 
-wrapper = CALM(
-  dim_anchor = 512,
-  dim_augment = 512,
-  anchor_llm = anchor_llm,
-  augment_llm = augment_llm
-)
+wrapper = CALM(anchor_llm, augment_llm)
+
+# mock input
 
 seq = torch.randint(0, 20000, (1, 1024))
 mask = torch.ones((1, 1024)).bool()
 prompt = torch.randint(0, 20000, (1, 256))
+
+# forward for finetuning loss
 
 loss = wrapper(
     seq,
@@ -71,9 +72,9 @@ loss.backward()
 ## Todo
 
 - [x] figure out how to correctly mask augment llm tokens
+- [x] auto-derive model dimensions with dummy input
 
 - [ ] handle a wrapper or function that takes in the sequence and prompt length, and auto derives the inputs to CALM
-- [ ] auto-derive model dimensions with dummy input
 - [ ] take care of finetuning training logic
 - [ ] allow for custom function for returning transformer blocks from llm module
 
