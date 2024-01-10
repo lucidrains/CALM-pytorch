@@ -43,6 +43,22 @@ def transformer_blocks(transformer: Module) -> List[Module]:
         blocks.append(layer[-1])
     return blocks
 
+# helper classes
+
+class Recorder:
+    def __init__(self):
+        self.output = None
+
+    def __call__(self, _, __, out):
+        print(out.shape)
+        self.output = out
+
+    def pop_saved(self):
+        output = self.output
+        assert exists(self.output)
+        self.output = None
+        return output
+
 # main class
 
 class CALM(Module):
@@ -63,6 +79,9 @@ class CALM(Module):
 
         freeze_all_layers_(anchor_llm)
         freeze_all_layers_(augment_llm)
+
+        self.anchor_llm = anchor_llm
+        self.augment_llm = augment_llm
 
         # matching up blocks from anchor to augment LLM, accounting for potential differences in depth
 
@@ -87,9 +106,17 @@ class CALM(Module):
 
         # instantiate cross attentions
 
+        self.recorders = [Recorder() for _ in range(num_cross_attns)]
+
         self.cross_attns = ModuleList([
             Attention(dim = dim_anchor, dim_context = dim_augment, **attn_kwargs) for _ in range(num_cross_attns)
         ])
+
+        # connect the two models
+
+        for anchor_block, recorder, cross_attn, augment_block in zip(anchor_blocks_to_hook, self.recorders, self.cross_attns, augment_blocks_to_hook):
+            augment_block.register_forward_hook(recorder)
+            anchor_block.register_forward_hook(lambda _, __, output: (cross_attn(output, context = recorder.pop_saved()) + output))
 
     def parameters(self):
         return self.cross_attns.parameters()
@@ -98,4 +125,5 @@ class CALM(Module):
         self,
         x: Tensor
     ):
-        return x
+        _ = self.augment_llm(x)
+        return self.anchor_llm

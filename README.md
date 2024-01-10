@@ -8,6 +8,61 @@ Will attempt to generalize this to any number of LLMs
 
 <a href="https://discord.gg/Vmm5nrMZWc">Temporary discord discussion</a>
 
+## Install
+
+```bash
+$ pip install CALM-pytorch
+```
+
+## Usage
+
+ex. with `x-transformers`
+
+```python
+import torch
+from x_transformers import TransformerWrapper, Decoder
+
+augment_llm = TransformerWrapper(
+    num_tokens = 20000,
+    max_seq_len = 1024,
+    attn_layers = Decoder(
+        dim = 512,
+        depth = 12,
+        heads = 8
+    )
+)
+
+anchor_llm = TransformerWrapper(
+    num_tokens = 20000,
+    max_seq_len = 1024,
+    attn_layers = Decoder(
+        dim = 512,
+        depth = 2,
+        heads = 8
+    )
+)
+
+from CALM_pytorch import CALM
+
+wrapper = CALM(
+  dim_anchor = 512,
+  dim_augment = 512,
+  anchor_llm = anchor_llm,
+  augment_llm = augment_llm
+)
+
+seq = torch.randint(0, 20000, (1, 1024))
+
+logits = wrapper(seq)
+```
+
+## Todo
+
+- [ ] auto-derive model dimensions with dummy input
+- [ ] figure out how to correctly mask augment llm tokens
+- [ ] take care of finetuning training logic
+- [ ] allow for custom function for returning transformer blocks from llm module
+
 ## Citations
 
 ```bibtex
