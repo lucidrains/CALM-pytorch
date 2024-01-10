@@ -90,6 +90,14 @@ class CrossAttentionBlock(Module):
 
         self.attn = Attention(dim = dim, dim_context = dim_context, **kwargs)
 
+        self.context_mask = None
+
+    def set_mask(self, mask: Tensor):
+        self.context_mask = mask
+
+    def unset_mask(self):
+        self.context_mask = None
+
     def forward(self, _, __, x):
 
         context = self.recorder.pop_saved()
@@ -102,7 +110,7 @@ class CrossAttentionBlock(Module):
             if exists(self.context_proj):
                 context = self.context_proj(context)
 
-            out = self.attn(x, context) + res
+            out = self.attn(x, context, context_mask = self.context_mask) + res
 
         return out
 
@@ -122,9 +130,10 @@ class CALM(Module):
             pre_rmsnorm = True,
             flash = True
         ),
+        forward_mask_to_augment_llm_key: Optional[str] = None,   # if set, will forward the prompt_mask to the augment LLM (in case it is an encoder) with this key
         get_augment_transformer_blocks_fn: Callable = lambda module: module.blocks,
         get_anchor_transformer_blocks_fn: Callable = lambda module: module.blocks,
-        ignore_index = -1
+        pad_id = -1
     ):
         super().__init__()
 
@@ -183,7 +192,11 @@ class CALM(Module):
 
         # cross entropy loss related
 
-        self.ignore_index = ignore_index
+        self.pad_id = pad_id
+
+        # forwarding a mask to augment llm
+
+        self.forward_mask_to_augment_llm_key = forward_mask_to_augment_llm_key
 
     def parameters(self):
         return self.cross_attns.parameters()
@@ -191,26 +204,57 @@ class CALM(Module):
     def forward(
         self,
         x: Tensor,
+        prompt: Tensor,
+        mask = None,
         return_loss = True
     ):
         if return_loss:
             self.cross_attns.train()
             self.anchor_llm.train()
+
             x, labels = x[:, :-1], x[:, 1:]
 
+            if exists(mask):
+                labels = labels.masked_fill(~mask[:, 1:], self.pad_id)
+
+        prompt_mask = prompt != self.pad_id
+
+        # invoke the augment llm, gathering up the hidden states with the forward hook
+
         with torch.no_grad():
+            augment_llm_kwarg = dict()
+
+            if exists(self.forward_mask_to_augment_llm_key):
+                augment_llm_kwarg = {self.forward_mask_to_augment_llm_key: prompt_mask}
+
             self.augment_llm.eval()
-            _ = self.augment_llm(x)
+            _ = self.augment_llm(prompt)
+
+        # set the context mask for the cross attention
+
+        for cross_attn in self.cross_attns:
+            cross_attn.set_mask(prompt_mask)
+
+        # then invoke the anchor llm, which should take care of the cross attending to the augmented llm hidden states
 
         logits = self.anchor_llm(x)
+
+        # unset the context mask
+
+        for cross_attn in self.cross_attns:
+            cross_attn.unset_mask()
+
+        # return logits for decoding
 
         if not return_loss:
             return logits
 
+        # for fine tuning
+
         loss = F.cross_entropy(
             rearrange(logits, 'b n c -> b c n'),
             labels,
-            ignore_index = self.ignore_index
+            ignore_index = self.pad_id
         )
 
         return loss

@@ -56,15 +56,24 @@ wrapper = CALM(
 )
 
 seq = torch.randint(0, 20000, (1, 1024))
+mask = torch.ones((1, 1024)).bool()
+prompt = torch.randint(0, 20000, (1, 256))
 
-loss = wrapper(seq)
+loss = wrapper(
+    seq,
+    mask = mask,
+    prompt = prompt
+)
+
 loss.backward()
 ```
 
 ## Todo
 
+- [x] figure out how to correctly mask augment llm tokens
+
+- [ ] handle a wrapper or function that takes in the sequence and prompt length, and auto derives the inputs to CALM
 - [ ] auto-derive model dimensions with dummy input
-- [ ] figure out how to correctly mask augment llm tokens
 - [ ] take care of finetuning training logic
 - [ ] allow for custom function for returning transformer blocks from llm module
 
