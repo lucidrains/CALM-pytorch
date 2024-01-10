@@ -129,8 +129,8 @@ class CALM(Module):
             flash = True
         ),
         forward_mask_to_augment_llm_key: Optional[str] = None,   # if set, will forward the prompt_mask to the augment LLM (in case it is an encoder) with this key
-        get_augment_transformer_blocks_fn: Callable = lambda module: module.blocks,
-        get_anchor_transformer_blocks_fn: Callable = lambda module: module.blocks,
+        get_augment_transformer_blocks_fn: Callable[[Module], List[Module]] = lambda module: module.blocks,
+        get_anchor_transformer_blocks_fn: Callable[[Module], List[Module]] = lambda module: module.blocks,
         pad_id = -1
     ):
         super().__init__()
