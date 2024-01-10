@@ -7,7 +7,7 @@ from torch.nn import Module, ModuleList
 from torch import nn, einsum, Tensor
 
 from beartype import beartype
-from beartype.typing import List, Optional
+from beartype.typing import List, Optional, Callable
 
 from einops import rearrange, repeat
 
@@ -118,6 +118,8 @@ class CALM(Module):
             pre_rmsnorm = True,
             flash = True
         ),
+        get_augment_transformer_blocks_fn: Callable = lambda module: module.blocks,
+        get_anchor_transformer_blocks_fn: Callable = lambda module: module.blocks,
         ignore_index = -1
     ):
         super().__init__()
@@ -133,8 +135,15 @@ class CALM(Module):
 
         # matching up blocks from anchor to augment LLM, accounting for potential differences in depth
 
-        anchor_transformer_blocks = transformer_blocks(anchor_llm)
-        augment_transformer_blocks = transformer_blocks(augment_llm)
+        if isinstance(anchor_llm, TransformerWrapper):
+            anchor_transformer_blocks = transformer_blocks(anchor_llm)
+        else:
+            anchor_transformer_blocks = get_anchor_transformer_blocks_fn(anchor_llm)
+
+        if isinstance(augment_llm, TransformerWrapper):
+            augment_transformer_blocks = transformer_blocks(augment_llm)
+        else:
+            augment_transformer_blocks = get_augment_transformer_blocks_fn(augment_llm)
 
         num_anchor_blocks = len(anchor_transformer_blocks)
         num_augment_blocks = len(augment_transformer_blocks)
