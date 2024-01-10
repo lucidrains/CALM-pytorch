@@ -14,6 +14,10 @@ Will attempt to generalize this to any number of LLMs
 $ pip install CALM-pytorch
 ```
 
+## Appreciation
+
+- <a href="https://a16z.com/supporting-the-open-source-ai-community/">A16Z Open Source AI Grant Program</a> and <a href="https://huggingface.co/">🤗 Huggingface</a> for the generous sponsorships, as well as my other sponsors, for affording me the independence to open source current artificial intelligence research
+
 ## Usage
 
 ex. with `x-transformers`
