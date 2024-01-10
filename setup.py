@@ -16,6 +16,7 @@ setup(
     'composing LLMs'
   ],
   install_requires = [
+    'accelerate',
     'beartype',
     'einops>=0.7.0',
     'pytorch-custom-utils>=0.0.9',

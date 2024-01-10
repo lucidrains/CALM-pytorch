@@ -17,6 +17,10 @@ from x_transformers.x_transformers import (
     TransformerWrapper,
 )
 
+from accelerate import Accelerator
+
+from pytorch_custom_utils import OptimizerWithWarmupSchedule
+
 # helpers
 
 def exists(v):
@@ -210,3 +214,9 @@ class CALM(Module):
         )
 
         return loss
+
+# fine tune trainer
+
+class FineTuner:
+    def __init__(self):
+        raise NotImplementedError
