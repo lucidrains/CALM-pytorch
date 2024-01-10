@@ -59,6 +59,38 @@ class Recorder:
         self.output = None
         return output
 
+# cross attention wrapper class
+
+class CrossAttentionBlock(Module):
+    @beartype
+    def __init__(
+        self,
+        dim,
+        dim_context,
+        linear_project_context = True,  # in the paper, they do a projection on the augmented hidden states. not sure if this is needed though, but better to be accurate first
+        pre_rmsnorm = False,
+        **kwargs
+    ):
+        super().__init__()
+        self.pre_rmsnorm = RMSNorm(dim) if pre_rmsnorm else nn.Identity()
+
+        self.context_proj = None
+
+        if linear_project_context:
+            self.context_proj = nn.Linear(dim_context, dim)
+            dim_context = dim
+
+        self.attn = Attention(dim = dim, dim_context = dim_context, **kwargs)
+
+    def forward(self, x, context):
+        res = x
+        x = self.pre_rmsnorm(x)
+
+        if exists(self.context_proj):
+            context = self.context_proj(context)
+
+        return self.attn(x, context) + res
+
 # main class
 
 class CALM(Module):
@@ -70,7 +102,10 @@ class CALM(Module):
         anchor_llm: Module,
         augment_llm: Module,
         augment_every_num_layers = 4,  # in the paper, they do 4
-        attn_kwargs: dict = dict()
+        attn_kwargs: dict = dict(
+            pre_rmsnorm = True,
+            flash = True
+        )
     ):
         super().__init__()
 
@@ -109,14 +144,14 @@ class CALM(Module):
         self.recorders = [Recorder() for _ in range(num_cross_attns)]
 
         self.cross_attns = ModuleList([
-            Attention(dim = dim_anchor, dim_context = dim_augment, **attn_kwargs) for _ in range(num_cross_attns)
+            CrossAttentionBlock(dim = dim_anchor, dim_context = dim_augment, **attn_kwargs) for _ in range(num_cross_attns)
         ])
 
         # connect the two models
 
         for anchor_block, recorder, cross_attn, augment_block in zip(anchor_blocks_to_hook, self.recorders, self.cross_attns, augment_blocks_to_hook):
             augment_block.register_forward_hook(recorder)
-            anchor_block.register_forward_hook(lambda _, __, output: (cross_attn(output, context = recorder.pop_saved()) + output))
+            anchor_block.register_forward_hook(lambda _, __, output: cross_attn(output, context = recorder.pop_saved()))
 
     def parameters(self):
         return self.cross_attns.parameters()
