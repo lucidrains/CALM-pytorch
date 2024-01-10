@@ -15,7 +15,8 @@ setup(
     'deep learning',
     'composing LLMs'
   ],
-  install_requires=[
+  install_requires = [
+    'beartype',
     'einops>=0.7.0',
     'pytorch-custom-utils>=0.0.9',
     'torch>=2.0',
