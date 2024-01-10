@@ -72,11 +72,13 @@ class CALM(Module):
         num_anchor_blocks = len(anchor_transformer_blocks)
         num_augment_blocks = len(augment_transformer_blocks)
 
+        assert num_anchor_blocks > 0 and num_augment_blocks > 0, 'no layers found in either anchor or augment attention networks'
+
         num_attended_augment_hiddens = ceil(num_augment_blocks / augment_every_num_layers)
         num_cross_attending_anchor_blocks = min(num_attended_augment_hiddens, num_anchor_blocks)
         anchor_every_num_layers = num_anchor_blocks // num_cross_attending_anchor_blocks
 
-        augment_blocks_to_hook = augment_transformer_blocks[::augment_every_num_layers]
+        augment_blocks_to_hook = augment_transformer_blocks[::-1][::augment_every_num_layers][::-1]
         anchor_blocks_to_hook = anchor_transformer_blocks[::anchor_every_num_layers]
 
         # number of cross attention
