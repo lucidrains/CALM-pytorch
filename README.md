@@ -57,7 +57,8 @@ wrapper = CALM(
 
 seq = torch.randint(0, 20000, (1, 1024))
 
-logits = wrapper(seq)
+loss = wrapper(seq)
+loss.backward()
 ```
 
 ## Todo

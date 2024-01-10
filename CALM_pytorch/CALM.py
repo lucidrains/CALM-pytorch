@@ -1,6 +1,8 @@
 from math import ceil
+from contextlib import nullcontext
 
 import torch
+import torch.nn.functional as F
 from torch.nn import Module, ModuleList
 from torch import nn, einsum, Tensor
 
@@ -50,13 +52,11 @@ class Recorder:
         self.output = None
 
     def __call__(self, _, __, out):
-        print(out.shape)
-        self.output = out
+        assert not exists(self.output)
+        self.output = out.detach()
 
     def pop_saved(self):
         output = self.output
-        assert exists(self.output)
-        self.output = None
         return output
 
 # cross attention wrapper class
@@ -83,13 +83,19 @@ class CrossAttentionBlock(Module):
         self.attn = Attention(dim = dim, dim_context = dim_context, **kwargs)
 
     def forward(self, x, context):
-        res = x
-        x = self.pre_rmsnorm(x)
 
-        if exists(self.context_proj):
-            context = self.context_proj(context)
+        maybe_enable_grad = torch.enable_grad if self.training else nullcontext
 
-        return self.attn(x, context) + res
+        with maybe_enable_grad():
+            res = x
+            x = self.pre_rmsnorm(x)
+
+            if exists(self.context_proj):
+                context = self.context_proj(context)
+
+            out = self.attn(x, context) + res
+
+        return out
 
 # main class
 
@@ -105,7 +111,8 @@ class CALM(Module):
         attn_kwargs: dict = dict(
             pre_rmsnorm = True,
             flash = True
-        )
+        ),
+        ignore_index = -1
     ):
         super().__init__()
 
@@ -141,24 +148,49 @@ class CALM(Module):
 
         # instantiate cross attentions
 
-        self.recorders = [Recorder() for _ in range(num_cross_attns)]
+        self.recorders = []
+        self.cross_attns = ModuleList([])
 
-        self.cross_attns = ModuleList([
-            CrossAttentionBlock(dim = dim_anchor, dim_context = dim_augment, **attn_kwargs) for _ in range(num_cross_attns)
-        ])
+        for _ in range(num_cross_attns):
+            self.recorders.append(Recorder())
+            self.cross_attns.append(CrossAttentionBlock(dim = dim_anchor, dim_context = dim_augment, **attn_kwargs))
 
         # connect the two models
 
         for anchor_block, recorder, cross_attn, augment_block in zip(anchor_blocks_to_hook, self.recorders, self.cross_attns, augment_blocks_to_hook):
             augment_block.register_forward_hook(recorder)
-            anchor_block.register_forward_hook(lambda _, __, output: cross_attn(output, context = recorder.pop_saved()))
+            anchor_block.register_forward_hook(lambda _, __, output: cross_attn(output, recorder.pop_saved()))
+
+        # cross entropy loss related
+
+        self.ignore_index = ignore_index
 
     def parameters(self):
         return self.cross_attns.parameters()
 
     def forward(
         self,
-        x: Tensor
+        x: Tensor,
+        return_loss = True
     ):
-        _ = self.augment_llm(x)
-        return self.anchor_llm
+        if return_loss:
+            self.cross_attns.train()
+            self.anchor_llm.train()
+            x, labels = x[:, :-1], x[:, 1:]
+
+        with torch.no_grad():
+            self.augment_llm.eval()
+            _ = self.augment_llm(x)
+
+        logits = self.anchor_llm(x)
+
+        if not return_loss:
+            return logits
+
+        loss = F.cross_entropy(
+            rearrange(logits, 'b n c -> b c n'),
+            labels,
+            ignore_index = self.ignore_index
+        )
+
+        return loss
