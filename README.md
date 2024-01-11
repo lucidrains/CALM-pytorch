@@ -95,7 +95,7 @@ trainer()
 - [x] take care of finetuning training logic
 
 - [ ] handle a wrapper or function that takes in the sequence and prompt length, and auto derives the inputs to CALM
-- [ ] allow for custom function for returning transformer blocks from llm module
+- [ ] show example of manually passing in list of transformer blocks as `List[Module]`. try out with some popular pretrained models
 
 ## Citations
 
