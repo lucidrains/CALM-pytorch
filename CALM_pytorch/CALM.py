@@ -28,6 +28,10 @@ from pytorch_custom_utils import (
     auto_unwrap_model
 )
 
+from pytorch_custom_utils.accelerate_utils import (
+    model_forward_contexts
+)
+
 # helpers
 
 def exists(v):
@@ -342,11 +346,12 @@ class FineTuner:
         scheduler: Optional[Type[_LRScheduler]] = None,
         scheduler_kwargs: dict = dict(),
         warmup_steps: int = 1000,
-        max_grad_norm = 0.5
+        max_grad_norm = 0.5,
+        grad_accum_steps = 1
     ):
         self.accelerator = Accelerator(**accelerate_kwargs)
 
-        self.dl = DataLoader(dataset, batch_size = batch_size, shuffle = True)
+        self.dl = DataLoader(dataset, batch_size = batch_size, shuffle = True, drop_last = True)
         self.data_kwarg_names = data_kwarg_names
 
         self.model = calm
@@ -368,6 +373,7 @@ class FineTuner:
 
         self.step = 0
         self.num_train_steps = num_train_steps
+        self.grad_accum_steps = grad_accum_steps
 
         self.checkpoint_every = checkpoint_every
         self.checkpoint_path = Path(checkpoint_path)
@@ -407,15 +413,23 @@ class FineTuner:
         self.model.train()
 
         for step in range(self.step, self.num_train_steps):
-            data = next(dl_iter)
 
-            if not isinstance(data, dict):
-                data = dict(zip(self.data_kwarg_names, data))
+            for context in model_forward_contexts(
+                model = self.model,
+                accelerator = self.accelerator,
+                grad_accum_steps = self.grad_accum_steps
+            ):
+                with context():
+                    data = next(dl_iter)
 
-            loss = self.model(**data, **forward_kwargs)
+                    if not isinstance(data, dict):
+                        data = dict(zip(self.data_kwarg_names, data))
+
+                    loss = self.model(**data, **forward_kwargs)
+
+                    self.accelerator.backward(loss / self.grad_accum_steps)
 
             self.print(f'{step + 1}: {loss.item():.3f}')
-            self.accelerator.backward(loss)
 
             self.optimizer.step()
             self.optimizer.zero_grad()
