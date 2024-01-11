@@ -50,7 +50,11 @@ anchor_llm = TransformerWrapper(
 
 from CALM_pytorch import CALM
 
-wrapper = CALM(anchor_llm, augment_llm)
+calm = CALM(
+    anchor_llm,
+    augment_llm,
+    augment_every_num_layers = 4
+)
 
 # mock input
 
@@ -60,7 +64,7 @@ prompt = torch.randint(0, 20000, (1, 256))
 
 # forward for finetuning loss
 
-loss = wrapper(
+loss = calm(
     seq,
     mask = mask,
     prompt = prompt

@@ -132,6 +132,7 @@ class CALM(Module):
         self,
         anchor_llm: Module,
         augment_llm: Module,
+        *,
         attn_kwargs: dict = dict(
             linear_project_context = True,
             pre_rmsnorm = True,
@@ -252,11 +253,16 @@ class CALM(Module):
         *,
         prompt: Tensor,
         mask: Optional[Tensor] = None,
-        return_loss = True
+        return_loss = True,
+        anchor_llm_in_train_mode = True  # unsure about this
     ):
         if return_loss:
             self.cross_attns.train()
-            self.anchor_llm.train()
+
+            if anchor_llm_in_train_mode:
+                self.anchor_llm.train()
+            else:
+                self.anchor_llm.eval()
 
             seq, labels = seq[:, :-1], seq[:, 1:]
 
@@ -393,8 +399,9 @@ class FineTuner:
         self.optimizer.load_state_dict(pkg['optimizer'])
         self.step = pkg['step']
 
-    def __call__(self):
+    def __call__(self, forward_kwargs: dict = dict()):
         dl_iter = cycle(self.dl)
+        self.model.train()
 
         for step in range(self.step, self.num_train_steps):
             data = next(dl_iter)
@@ -402,7 +409,7 @@ class FineTuner:
             if not isinstance(data, dict):
                 data = dict(zip(self.data_kwarg_names, data))
 
-            loss = self.model(**data)
+            loss = self.model(**data, **forward_kwargs)
 
             print(f'{step + 1}: {loss.item():.3f}')
             self.accelerator.backward(loss)
