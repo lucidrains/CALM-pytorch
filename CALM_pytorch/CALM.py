@@ -25,7 +25,10 @@ from pytorch_custom_utils import OptimizerWithWarmupSchedule
 
 def exists(v):
   return v is not None
- 
+
+def xnor(x, y):
+    return not (x ^ y)
+
 # freezing llms
 
 @beartype
@@ -122,15 +125,17 @@ class CALM(Module):
         self,
         anchor_llm: Module,
         augment_llm: Module,
-        augment_every_num_layers = 4,  # in the paper, they do 4
         attn_kwargs: dict = dict(
             linear_project_context = True,
             pre_rmsnorm = True,
             flash = True
         ),
         forward_mask_to_augment_llm_key: Optional[str] = None,   # if set, will forward the prompt_mask to the augment LLM (in case it is an encoder) with this key
+        augment_every_num_layers = 4, # in the paper, they do 4
         get_augment_transformer_blocks_fn: Callable[[Module], List[Module]] = lambda module: module.blocks,
         get_anchor_transformer_blocks_fn: Callable[[Module], List[Module]] = lambda module: module.blocks,
+        augment_transformer_blocks: Optional[List[Module]] = None,
+        anchor_transformer_blocks: Optional[List[Module]] = None,
         pad_id = -1
     ):
         super().__init__()
@@ -144,29 +149,36 @@ class CALM(Module):
         self.anchor_llm = anchor_llm
         self.augment_llm = augment_llm
 
-        # matching up blocks from anchor to augment LLM, accounting for potential differences in depth
+        assert xnor(exists(augment_transformer_blocks), exists(anchor_transformer_blocks))
 
-        if isinstance(anchor_llm, TransformerWrapper):
-            anchor_transformer_blocks = transformer_blocks(anchor_llm)
-        else:
-            anchor_transformer_blocks = get_anchor_transformer_blocks_fn(anchor_llm)
+        transformer_blocks_passed_in = exists(augment_transformer_blocks) and exists(anchor_transformer_blocks)
 
-        if isinstance(augment_llm, TransformerWrapper):
-            augment_transformer_blocks = transformer_blocks(augment_llm)
-        else:
-            augment_transformer_blocks = get_augment_transformer_blocks_fn(augment_llm)
+        # if list of transformer blocks for anchor and augment LLM not passed in, then derive it
 
-        num_anchor_blocks = len(anchor_transformer_blocks)
-        num_augment_blocks = len(augment_transformer_blocks)
+        # match up blocks from anchor to augment LLM, accounting for potential differences in depth
 
-        assert num_anchor_blocks > 0 and num_augment_blocks > 0, 'no layers found in either anchor or augment attention networks'
+        if not transformer_blocks_passed_in:
+            if isinstance(anchor_llm, TransformerWrapper):
+                anchor_transformer_blocks = transformer_blocks(anchor_llm)
+            else:
+                anchor_transformer_blocks = get_anchor_transformer_blocks_fn(anchor_llm)
 
-        num_attended_augment_hiddens = ceil(num_augment_blocks / augment_every_num_layers)
-        num_cross_attending_anchor_blocks = min(num_attended_augment_hiddens, num_anchor_blocks)
-        anchor_every_num_layers = num_anchor_blocks // num_cross_attending_anchor_blocks
+            if isinstance(augment_llm, TransformerWrapper):
+                augment_transformer_blocks = transformer_blocks(augment_llm)
+            else:
+                augment_transformer_blocks = get_augment_transformer_blocks_fn(augment_llm)
 
-        augment_blocks_to_hook = augment_transformer_blocks[::-1][::augment_every_num_layers][::-1]
-        anchor_blocks_to_hook = anchor_transformer_blocks[::anchor_every_num_layers]
+            num_anchor_blocks = len(anchor_transformer_blocks)
+            num_augment_blocks = len(augment_transformer_blocks)
+
+            assert num_anchor_blocks > 0 and num_augment_blocks > 0, 'no layers found in either anchor or augment attention networks'
+
+            num_attended_augment_hiddens = ceil(num_augment_blocks / augment_every_num_layers)
+            num_cross_attending_anchor_blocks = min(num_attended_augment_hiddens, num_anchor_blocks)
+            anchor_every_num_layers = num_anchor_blocks // num_cross_attending_anchor_blocks
+
+            augment_blocks_to_hook = augment_transformer_blocks[::-1][::augment_every_num_layers][::-1]
+            anchor_blocks_to_hook = anchor_transformer_blocks[::anchor_every_num_layers]
 
         # number of cross attention
 
@@ -234,10 +246,6 @@ class CALM(Module):
 
             x, labels = x[:, :-1], x[:, 1:]
 
-            if exists(mask):
-                mask = mask[:, 1:] & labels != self.pad_id
-                labels = labels.masked_fill(~mask, self.pad_id)
-
         prompt_mask = prompt != self.pad_id
 
         # invoke the augment llm, gathering up the hidden states with the forward hook
@@ -260,6 +268,8 @@ class CALM(Module):
 
         logits = self.anchor_llm(x)
 
+        assert logits.ndim == 3, 'anchor llm should return logits in the shape (batch, seq, num tokens)'
+
         # unset the context mask
 
         for cross_attn in self.cross_attns:
@@ -269,6 +279,11 @@ class CALM(Module):
 
         if not return_loss:
             return logits
+
+        # account for prompt masking
+
+        if exists(mask):
+            labels = labels.masked_fill(~mask[:, 1:], self.pad_id)
 
         # for fine tuning
 
