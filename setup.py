@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
   name = 'CALM-Pytorch',
   packages = find_packages(exclude=[]),
-  version = '0.0.14',
+  version = '0.0.15',
   license='MIT',
   description = 'CALM - Pytorch',
   author = 'Phil Wang',
@@ -19,7 +19,7 @@ setup(
     'accelerate',
     'beartype',
     'einops>=0.7.0',
-    'pytorch-custom-utils>=0.0.9',
+    'pytorch-custom-utils>=0.0.10',
     'torch>=2.0',
     'x-transformers>=1.27.3'
   ],

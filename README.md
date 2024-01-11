@@ -1,6 +1,6 @@
 <img src="./calm.png" width=400px/>
 
-## CALM - Pytorch (wip)
+## CALM - Pytorch
 
 Implementation of CALM from the paper <a href="https://arxiv.org/abs/2401.02412">LLM Augmented LLMs: Expanding Capabilities through Composition</a>, out of Google Deepmind
 
@@ -69,13 +69,32 @@ loss = wrapper(
 loss.backward()
 ```
 
+To use a handy trainer class using 🤗 Accelerate, just import `FineTuner` and use as follows
+
+```python
+trainer = FineTuner(
+    calm = calm,
+    dataset = dataset,   # returns a dictionary of input kwargs to calm - dict(seq: Tensor, mask: Tensor, prompt: Tensor). it can also return a Tuple, in which data_kwargs needs to be set to the correct ordered value of kwarg names
+    batch_size = 16,
+    num_train_steps = 10000,
+    learning_rate = 3e-4,
+    weight_decay = 1e-2,
+    warmup_steps = 1000,
+    checkpoint_every = 1000
+)
+
+trainer()
+
+# checkpoints of the cross attention parameters will be saved to ./checkpoints every 1000 steps
+```
+
 ## Todo
 
 - [x] figure out how to correctly mask augment llm tokens
 - [x] auto-derive model dimensions with dummy input
+- [x] take care of finetuning training logic
 
 - [ ] handle a wrapper or function that takes in the sequence and prompt length, and auto derives the inputs to CALM
-- [ ] take care of finetuning training logic
 - [ ] allow for custom function for returning transformer blocks from llm module
 
 ## Citations

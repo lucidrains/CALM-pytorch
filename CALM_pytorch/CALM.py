@@ -1,13 +1,16 @@
+from pathlib import Path
 from math import ceil
 from contextlib import nullcontext
 
 import torch
 import torch.nn.functional as F
 from torch.nn import Module, ModuleList
+from torch.utils.data import Dataset, DataLoader
+from torch.optim.lr_scheduler import _LRScheduler
 from torch import nn, einsum, Tensor
 
 from beartype import beartype
-from beartype.typing import List, Optional, Callable
+from beartype.typing import List, Optional, Callable, Type, Tuple
 
 from einops import rearrange, repeat
 
@@ -19,7 +22,11 @@ from x_transformers.x_transformers import (
 
 from accelerate import Accelerator
 
-from pytorch_custom_utils import OptimizerWithWarmupSchedule
+from pytorch_custom_utils import (
+    OptimizerWithWarmupSchedule,
+    get_adam_optimizer,
+    auto_unwrap_model
+)
 
 # helpers
 
@@ -230,21 +237,28 @@ class CALM(Module):
 
         self.forward_mask_to_augment_llm_key = forward_mask_to_augment_llm_key
 
+    def state_dict(self):
+        return self.cross_attns.state_dict()
+
+    def load_state_dict(self, pkg, strict = False):
+        self.cross_attns.load_state_dict(pkg, strict = strict)
+
     def parameters(self):
         return self.cross_attns.parameters()
 
     def forward(
         self,
-        x: Tensor,
+        seq: Tensor,
+        *,
         prompt: Tensor,
-        mask = None,
+        mask: Optional[Tensor] = None,
         return_loss = True
     ):
         if return_loss:
             self.cross_attns.train()
             self.anchor_llm.train()
 
-            x, labels = x[:, :-1], x[:, 1:]
+            seq, labels = seq[:, :-1], seq[:, 1:]
 
         prompt_mask = prompt != self.pad_id
 
@@ -266,7 +280,7 @@ class CALM(Module):
 
         # then invoke the anchor llm, which should take care of the cross attending to the augmented llm hidden states
 
-        logits = self.anchor_llm(x)
+        logits = self.anchor_llm(seq)
 
         assert logits.ndim == 3, 'anchor llm should return logits in the shape (batch, seq, num tokens)'
 
@@ -297,6 +311,113 @@ class CALM(Module):
 
 # fine tune trainer
 
+def cycle(dl):
+    while True:
+        for batch in dl:
+            yield batch
+
+@auto_unwrap_model()
 class FineTuner:
-    def __init__(self):
-        raise NotImplementedError
+
+    @beartype
+    def __init__(
+        self,
+        calm: CALM,
+        *,
+        num_train_steps: int,
+        learning_rate: float,
+        weight_decay: float,
+        batch_size: int,
+        dataset: Dataset,
+        data_kwarg_names: Tuple[str, ...] = ('seq', 'mask', 'prompt'),
+        accelerate_kwargs: dict = dict(),
+        checkpoint_every: int = 1000,
+        checkpoint_path: str = './checkpoints',
+        scheduler: Optional[Type[_LRScheduler]] = None,
+        scheduler_kwargs: dict = dict(),
+        warmup_steps: int = 1000,
+        max_grad_norm = 0.5
+    ):
+        self.accelerator = Accelerator(**accelerate_kwargs)
+
+        self.dl = DataLoader(dataset, batch_size = batch_size, shuffle = True)
+        self.data_kwarg_names = data_kwarg_names
+
+        self.model = calm
+
+        adam = get_adam_optimizer(
+            calm.parameters(),
+            lr = learning_rate,
+            wd = weight_decay
+        )
+
+        self.optimizer = OptimizerWithWarmupSchedule(
+            accelerator = self.accelerator,
+            optimizer = adam,
+            scheduler = scheduler,
+            scheduler_kwargs = scheduler_kwargs,
+            warmup_steps = warmup_steps,
+            max_grad_norm = max_grad_norm
+        )
+
+        self.step = 0
+        self.num_train_steps = num_train_steps
+
+        self.checkpoint_every = checkpoint_every
+        self.checkpoint_path = Path(checkpoint_path)
+        self.checkpoint_path.mkdir(exist_ok = True, parents = True)
+
+    @property
+    def is_main(self):
+        return self.accelerator.is_main_process
+
+    def save(self, filename: str, overwrite: bool = True):
+        path = self.checkpoint_path / filename
+        assert overwrite or not path.exists()
+
+        pkg = dict(
+            model = self.model.state_dict(),
+            optimizer = self.optimizer.state_dict(),
+            step = self.step
+        )
+
+        torch.save(pkg, str(path))
+
+    def load(self, filename: str):
+        path = self.checkpoint_path / filename
+        assert path.exists()
+
+        pkg = torch.load(str(path))
+
+        self.model.load_state_dict(pkg['model'])
+        self.optimizer.load_state_dict(pkg['optimizer'])
+        self.step = pkg['step']
+
+    def __call__(self):
+        dl_iter = cycle(self.dl)
+
+        for step in range(self.step, self.num_train_steps):
+            data = next(dl_iter)
+
+            if not isinstance(data, dict):
+                data = dict(zip(self.data_kwarg_names, data))
+
+            loss = self.model(**data)
+
+            print(f'{step + 1}: {loss.item():.3f}')
+            self.accelerator.backward(loss)
+
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+
+            self.step += 1
+
+            self.accelerator.wait_for_everyone()
+
+            if self.is_main and not (self.step % self.checkpoint_every):
+                num = self.step // self.checkpoint_every
+                self.save(f'checkpoint.{num}.pt')
+
+            self.accelerator.wait_for_everyone()
+
+        print('training complete')

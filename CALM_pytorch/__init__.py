@@ -1,1 +1,1 @@
-from CALM_pytorch.CALM import CALM
+from CALM_pytorch.CALM import CALM, FineTuner
