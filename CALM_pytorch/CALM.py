@@ -377,6 +377,9 @@ class FineTuner:
     def is_main(self):
         return self.accelerator.is_main_process
 
+    def print(self, msg):
+        self.accelerator.print(msg)
+
     def save(self, filename: str, overwrite: bool = True):
         path = self.checkpoint_path / filename
         assert overwrite or not path.exists()
@@ -411,7 +414,7 @@ class FineTuner:
 
             loss = self.model(**data, **forward_kwargs)
 
-            print(f'{step + 1}: {loss.item():.3f}')
+            self.print(f'{step + 1}: {loss.item():.3f}')
             self.accelerator.backward(loss)
 
             self.optimizer.step()
@@ -427,4 +430,5 @@ class FineTuner:
 
             self.accelerator.wait_for_everyone()
 
-        print('training complete')
+        self.print('training complete')
+        self.save('checkpoint.-1.pt')
