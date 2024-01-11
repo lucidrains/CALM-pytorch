@@ -100,6 +100,8 @@ trainer()
 
 - [ ] handle a wrapper or function that takes in the sequence and prompt length, and auto derives the inputs to CALM
 - [ ] show example of manually passing in list of transformer blocks as `List[Module]`. try out with some popular pretrained models
+- [ ] extend to a list of augmentation llms
+    - [ ] offer a debug method that shows the derived connectivity between anchor and augmentation llms
 
 ## Citations
 
