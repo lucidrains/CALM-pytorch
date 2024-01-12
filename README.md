@@ -6,8 +6,6 @@ Implementation of CALM from the paper <a href="https://arxiv.org/abs/2401.02412"
 
 Will attempt to generalize this to any number of LLMs
 
-<a href="https://discord.gg/Vmm5nrMZWc">Temporary discord discussion</a>
-
 ## Install
 
 ```bash
