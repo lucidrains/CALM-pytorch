@@ -102,7 +102,13 @@ class CrossAttentionBlock(Module):
             self.context_proj = nn.Linear(dim_context, dim)
             dim_context = dim
 
-        self.attn = Attention(dim = dim, dim_context = dim_context, zero_init_output = True, **kwargs)
+        self.attn = Attention(
+            dim = dim,
+            dim_context = dim_context,
+            zero_init_output = True,
+            gate_value_heads = True,
+            **kwargs
+        )
 
         self.context_mask = None
 
