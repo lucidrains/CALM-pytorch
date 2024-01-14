@@ -10,7 +10,8 @@ from torch.optim.lr_scheduler import _LRScheduler
 from torch import nn, einsum, Tensor
 
 from beartype import beartype
-from beartype.typing import List, Optional, Callable, Type, Tuple
+from beartype.door import is_bearable
+from beartype.typing import List, Optional, Callable, Type, Tuple, Union
 
 from einops import rearrange, repeat
 
@@ -57,7 +58,7 @@ def freeze_all_layers_(module):
 # ex. for x-transformers TransformerWrapper
 
 @beartype
-def transformer_blocks(transformer: Module) -> List[Module]:
+def x_transformer_blocks(transformer: Module) -> List[Module]:
     blocks = []
     for layer in transformer.attn_layers.layers:
         blocks.append(layer[-1])
@@ -141,7 +142,7 @@ class CALM(Module):
     def __init__(
         self,
         anchor_llm: Module,
-        augment_llm: Module,
+        augment_llm: Union[Module, List[Module]],
         *,
         attn_kwargs: dict = dict(
             linear_project_context = True,
@@ -152,20 +153,40 @@ class CALM(Module):
         augment_every_num_layers = 4, # in the paper, they do 4
         get_augment_transformer_blocks_fn: Callable[[Module], List[Module]] = lambda module: module.blocks,
         get_anchor_transformer_blocks_fn: Callable[[Module], List[Module]] = lambda module: module.blocks,
-        augment_transformer_blocks: Optional[List[Module]] = None,
+        augment_transformer_blocks: Optional[Union[List[List[Module]], List[Module]]] = None,
         anchor_transformer_blocks: Optional[List[Module]] = None,
         pad_id = -1
     ):
         super().__init__()
 
+        # account for single augmentation llm (which is what the paper did)
+        # in this repo, generalizing it to multiple augmentation llms
+
+        if not isinstance(augment_llm, list):
+            augment_llms = [augment_llm]
+        else:
+            augment_llms = augment_llm
+
+        if exists(augment_transformer_blocks):
+            if is_bearable(augment_transformer_blocks, List[Module]):
+                augment_transformer_blocks = [augment_transformer_blocks]
+
         # main contribution of paper
         # is showing that both anchor and augment can be frozen, and that cross attention from anchor -> augment every few layers outperforms lora
 
-        freeze_all_layers_(anchor_llm)
-        freeze_all_layers_(augment_llm)
-
         self.anchor_llm = anchor_llm
-        self.augment_llm = augment_llm
+        self.augment_llms = nn.ModuleList(augment_llms)
+
+        freeze_all_layers_(self.anchor_llm)
+        freeze_all_layers_(self.augment_llms)
+
+        # the only parameters being learned are a bunch of cross attention layers
+        # attending from anchor to augmentation model(s)
+
+        self.cross_attns = nn.ModuleList([])
+
+        # determine the transformer blocks involved
+        # first determine if the blocks are already passed in
 
         assert xnor(exists(augment_transformer_blocks), exists(anchor_transformer_blocks))
 
@@ -176,69 +197,90 @@ class CALM(Module):
         # match up blocks from anchor to augment LLM, accounting for potential differences in depth
 
         if not transformer_blocks_passed_in:
-            if isinstance(anchor_llm, TransformerWrapper):
-                anchor_transformer_blocks = transformer_blocks(anchor_llm)
-            else:
-                anchor_transformer_blocks = get_anchor_transformer_blocks_fn(anchor_llm)
+            get_anchor_blocks_fn = x_transformer_blocks if isinstance(anchor_llm, TransformerWrapper) else get_anchor_transformer_blocks_fn
+            anchor_transformer_blocks = get_anchor_blocks_fn(self.anchor_llm)
 
-            if isinstance(augment_llm, TransformerWrapper):
-                augment_transformer_blocks = transformer_blocks(augment_llm)
-            else:
-                augment_transformer_blocks = get_augment_transformer_blocks_fn(augment_llm)
+            for augment_llm in self.augment_llms:
+                get_augment_blocks_fn = x_transformer_blocks if isinstance(augment_llm, TransformerWrapper) else get_augment_transformer_blocks_fn
+                augment_transformer_blocks = [get_augment_blocks_fn(llm) for llm in self.augment_llms]
 
-            num_anchor_blocks = len(anchor_transformer_blocks)
-            num_augment_blocks = len(augment_transformer_blocks)
+        # calculation for determining every Nth layer of augmentation layer hiddens is attended to
+        # in paper, they did every 4th layer of 1 augmentation llm
 
-            assert num_anchor_blocks > 0 and num_augment_blocks > 0, 'no layers found in either anchor or augment attention networks'
+        num_anchor_blocks = len(anchor_transformer_blocks)
+        num_augment_blocks = [len(block) for block in augment_transformer_blocks]
 
-            num_attended_augment_hiddens = ceil(num_augment_blocks / augment_every_num_layers)
+        assert num_anchor_blocks > 0 and all([n > 0 for n in num_augment_blocks]), 'no layers found in either anchor or augment attention networks'
+
+        matched_anchor_to_augment_blocks: List[Tuple[List[Module], List[Module]]] = []
+
+        for one_augment_transformer_blocks, one_num_augment_blocks in zip(augment_transformer_blocks, num_augment_blocks):
+            num_attended_augment_hiddens = ceil(one_num_augment_blocks / augment_every_num_layers)
             num_cross_attending_anchor_blocks = min(num_attended_augment_hiddens, num_anchor_blocks)
             anchor_every_num_layers = num_anchor_blocks // num_cross_attending_anchor_blocks
 
-            augment_blocks_to_hook = augment_transformer_blocks[::-1][::augment_every_num_layers][::-1]
             anchor_blocks_to_hook = anchor_transformer_blocks[::anchor_every_num_layers]
+            augment_blocks_to_hook = one_augment_transformer_blocks[::-1][::augment_every_num_layers][::-1]
 
-        # number of cross attention
+            matched_anchor_to_augment_blocks.append((anchor_blocks_to_hook, augment_blocks_to_hook))
 
-        num_cross_attns = min(len(augment_blocks_to_hook), len(anchor_blocks_to_hook))
+        # cross attend from anchor to augment llm using module forward hooks
 
-        # use forward hook to automatically figure out model dimensions for augment and anchor models
+        all_anchor_dims = []
+        all_augment_dims = []
 
-        anchor_dims = []
-        augment_dims = []
+        for (anchor_blocks_to_hook, augment_blocks_to_hook), augment_llm in zip(matched_anchor_to_augment_blocks, self.augment_llms):
 
-        temp_hooks = []
-        get_anchor_dims = lambda _, __, out: anchor_dims.append(out.shape[-1])
-        get_augment_dims = lambda _, __, out: augment_dims.append(out.shape[-1])
+            # number of cross attention for one augmentation llm
 
-        for anchor_block, augment_block in zip(anchor_blocks_to_hook, augment_blocks_to_hook):
-            temp_hooks.append(anchor_block.register_forward_hook(get_anchor_dims))
-            temp_hooks.append(augment_block.register_forward_hook(get_augment_dims))
+            num_cross_attns = min(len(augment_blocks_to_hook), len(anchor_blocks_to_hook))
 
-        dummy_input = torch.ones((1, 1), dtype = torch.long)
-        self.anchor_llm(dummy_input)
-        self.augment_llm(dummy_input)
+            # use forward hook to automatically figure out model dimensions for augment and anchor models
 
-        # unregister temporary hooks
+            anchor_dims = []
+            augment_dims = []
 
-        for hook in temp_hooks:
-            hook.remove()
+            temp_hooks = []
+            get_anchor_dims = lambda _, __, out: anchor_dims.append(out.shape[-1])
+            get_augment_dims = lambda _, __, out: augment_dims.append(out.shape[-1])
+
+            for anchor_block, augment_block in zip(anchor_blocks_to_hook, augment_blocks_to_hook):
+                temp_hooks.append(anchor_block.register_forward_hook(get_anchor_dims))
+                temp_hooks.append(augment_block.register_forward_hook(get_augment_dims))
+
+            dummy_input = torch.ones((1, 1), dtype = torch.long)
+            self.anchor_llm(dummy_input)
+            augment_llm(dummy_input)
+
+            # unregister temporary hooks
+
+            for hook in temp_hooks:
+                hook.remove()
+
+            all_anchor_dims.append(anchor_dims)
+            all_augment_dims.append(augment_dims)
 
         # instantiate cross attentions
 
-        self.recorders = []
-        self.cross_attns = ModuleList([])
+        for anchor_dims, augment_dims, (anchor_blocks_to_hook, augment_blocks_to_hook), augment_llm in zip(all_anchor_dims, all_augment_dims, matched_anchor_to_augment_blocks, self.augment_llms):
 
-        for dim_anchor, dim_augment, _ in zip(anchor_dims, augment_dims, range(num_cross_attns)):
-            recorder = Recorder()
-            self.recorders.append(recorder)
-            self.cross_attns.append(CrossAttentionBlock(dim = dim_anchor, dim_context = dim_augment, recorder = recorder, **attn_kwargs))
+            recorders = []
+            one_augment_llm_cross_attns = ModuleList([])
 
-        # connect the two models
+            for dim_anchor, dim_augment, _ in zip(anchor_dims, augment_dims, range(num_cross_attns)):
+                recorder = Recorder()
+                recorders.append(recorder)
+                one_augment_llm_cross_attns.append(CrossAttentionBlock(dim = dim_anchor, dim_context = dim_augment, recorder = recorder, **attn_kwargs))
 
-        for anchor_block, recorder, cross_attn, augment_block in zip(anchor_blocks_to_hook, self.recorders, self.cross_attns, augment_blocks_to_hook):
-            augment_block.register_forward_hook(recorder)
-            anchor_block.register_forward_hook(cross_attn)
+            # connect the two models
+
+            for anchor_block, recorder, cross_attn, augment_block in zip(anchor_blocks_to_hook, recorders, one_augment_llm_cross_attns, augment_blocks_to_hook):
+                augment_block.register_forward_hook(recorder)
+                anchor_block.register_forward_hook(cross_attn)
+
+            # add to cross_attns
+
+            self.cross_attns.append(one_augment_llm_cross_attns)
 
         # cross entropy loss related
 
@@ -286,13 +328,14 @@ class CALM(Module):
             if exists(self.forward_mask_to_augment_llm_key):
                 augment_llm_kwarg = {self.forward_mask_to_augment_llm_key: prompt_mask}
 
-            self.augment_llm.eval()
-            _ = self.augment_llm(prompt)
+            self.augment_llms.eval()
+            [augment_llm(prompt) for augment_llm in self.augment_llms]
 
         # set the context mask for the cross attention
 
-        for cross_attn in self.cross_attns:
-            cross_attn.set_mask(prompt_mask)
+        for one_cross_attn in self.cross_attns:
+            for cross_attn in one_cross_attn:
+                cross_attn.set_mask(prompt_mask)
 
         # then invoke the anchor llm, which should take care of the cross attending to the augmented llm hidden states
 
@@ -302,8 +345,9 @@ class CALM(Module):
 
         # unset the context mask
 
-        for cross_attn in self.cross_attns:
-            cross_attn.unset_mask()
+        for one_cross_attn in self.cross_attns:
+            for cross_attn in one_cross_attn:
+                cross_attn.unset_mask()
 
         # return logits for decoding
 

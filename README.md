@@ -90,16 +90,29 @@ trainer()
 # checkpoints of the cross attention parameters will be saved to ./checkpoints every 1000 steps
 ```
 
+To explore multiple augmentation LLMs, simply pass in a list for `augment_llm`
+
+ex.
+
+```python
+calm = CALM(
+    anchor_llm = anchor_llm,
+    augment_llm = [augment_llm1, augment_llm2] # pass in a list
+)
+```
+
 ## Todo
 
 - [x] figure out how to correctly mask augment llm tokens
 - [x] auto-derive model dimensions with dummy input
 - [x] take care of finetuning training logic
+- [x] extend to a list of augmentation llms
+    - [ ] handle different prompts being routed to the augmentation llms
+    - [ ] custom number of augmentation layers per augmetation llm
+    - [ ] full connectivity customization
 
 - [ ] handle a wrapper or function that takes in the sequence and prompt length, and auto derives the inputs to CALM
 - [ ] show example of manually passing in list of transformer blocks as `List[Module]`. try out with some popular pretrained models
-- [ ] extend to a list of augmentation llms
-    - [ ] offer a debug method that shows the derived connectivity between anchor and augmentation llms
 
 ## Citations
 
