@@ -110,6 +110,7 @@ calm = CALM(
     - [ ] handle different prompts being routed to the augmentation llms
     - [ ] custom number of augmentation layers per augmetation llm
     - [ ] full connectivity customization
+    - [ ] move the hook logic for deriving hidden shapes to pytorch-custom-utils for reuse
 
 - [ ] handle a wrapper or function that takes in the sequence and prompt length, and auto derives the inputs to CALM
 - [ ] show example of manually passing in list of transformer blocks as `List[Module]`. try out with some popular pretrained models
