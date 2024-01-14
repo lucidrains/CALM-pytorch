@@ -155,6 +155,7 @@ class CALM(Module):
         get_anchor_transformer_blocks_fn: Callable[[Module], List[Module]] = lambda module: module.blocks,
         augment_transformer_blocks: Optional[Union[List[List[Module]], List[Module]]] = None,
         anchor_transformer_blocks: Optional[List[Module]] = None,
+        anchor_to_augment_blocks: Optional[List[Tuple[List[Module], List[Module]]]] = None,
         pad_id = -1
     ):
         super().__init__()
@@ -212,24 +213,27 @@ class CALM(Module):
 
         assert num_anchor_blocks > 0 and all([n > 0 for n in num_augment_blocks]), 'no layers found in either anchor or augment attention networks'
 
-        matched_anchor_to_augment_blocks: List[Tuple[List[Module], List[Module]]] = []
+        if not exists(anchor_to_augment_blocks):
+            anchor_to_augment_blocks = []
 
-        for one_augment_transformer_blocks, one_num_augment_blocks in zip(augment_transformer_blocks, num_augment_blocks):
-            num_attended_augment_hiddens = ceil(one_num_augment_blocks / augment_every_num_layers)
-            num_cross_attending_anchor_blocks = min(num_attended_augment_hiddens, num_anchor_blocks)
-            anchor_every_num_layers = num_anchor_blocks // num_cross_attending_anchor_blocks
+            for one_augment_transformer_blocks, one_num_augment_blocks in zip(augment_transformer_blocks, num_augment_blocks):
+                num_attended_augment_hiddens = ceil(one_num_augment_blocks / augment_every_num_layers)
+                num_cross_attending_anchor_blocks = min(num_attended_augment_hiddens, num_anchor_blocks)
+                anchor_every_num_layers = num_anchor_blocks // num_cross_attending_anchor_blocks
 
-            anchor_blocks_to_hook = anchor_transformer_blocks[::anchor_every_num_layers]
-            augment_blocks_to_hook = one_augment_transformer_blocks[::-1][::augment_every_num_layers][::-1]
+                anchor_blocks_to_hook = anchor_transformer_blocks[::anchor_every_num_layers]
+                augment_blocks_to_hook = one_augment_transformer_blocks[::-1][::augment_every_num_layers][::-1]
 
-            matched_anchor_to_augment_blocks.append((anchor_blocks_to_hook, augment_blocks_to_hook))
+                anchor_to_augment_blocks.append((anchor_blocks_to_hook, augment_blocks_to_hook))
+
+        assert len(anchor_to_augment_blocks) == len(self.augment_llms)
 
         # cross attend from anchor to augment llm using module forward hooks
 
         all_anchor_dims = []
         all_augment_dims = []
 
-        for (anchor_blocks_to_hook, augment_blocks_to_hook), augment_llm in zip(matched_anchor_to_augment_blocks, self.augment_llms):
+        for (anchor_blocks_to_hook, augment_blocks_to_hook), augment_llm in zip(anchor_to_augment_blocks, self.augment_llms):
 
             # number of cross attention for one augmentation llm
 
@@ -262,7 +266,7 @@ class CALM(Module):
 
         # instantiate cross attentions
 
-        for anchor_dims, augment_dims, (anchor_blocks_to_hook, augment_blocks_to_hook), augment_llm in zip(all_anchor_dims, all_augment_dims, matched_anchor_to_augment_blocks, self.augment_llms):
+        for anchor_dims, augment_dims, (anchor_blocks_to_hook, augment_blocks_to_hook), augment_llm in zip(all_anchor_dims, all_augment_dims, anchor_to_augment_blocks, self.augment_llms):
 
             recorders = []
             one_augment_llm_cross_attns = ModuleList([])
