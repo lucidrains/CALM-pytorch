@@ -4,7 +4,7 @@
 
 Implementation of CALM from the paper <a href="https://arxiv.org/abs/2401.02412">LLM Augmented LLMs: Expanding Capabilities through Composition</a>, out of Google Deepmind
 
-Will attempt to generalize this to any number of LLMs
+Can support any number of augmentation LLMs
 
 ## Install
 
