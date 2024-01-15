@@ -108,7 +108,7 @@ calm = CALM(
 - [x] take care of finetuning training logic
 - [x] extend to a list of augmentation llms
     - [x] full connectivity customization
-    - [ ] custom number of augmentation layers per augmetation llm
+    - [ ] custom number of augmentation layers per augmentation llm
     - [ ] move the hook logic for deriving hidden shapes to pytorch-custom-utils for reuse
 
 - [ ] handle a wrapper or function that takes in the sequence and prompt length, and auto derives the inputs to CALM
