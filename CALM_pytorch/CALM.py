@@ -329,7 +329,7 @@ class CALM(Module):
         self,
         seq: Tensor,
         *,
-        prompt: Tensor,
+        prompt: Union[Tensor, Tuple[Tensor, ...]],
         mask: Optional[Tensor] = None,
         return_loss = True,
         anchor_llm_in_train_mode = True  # unsure about this
@@ -344,18 +344,28 @@ class CALM(Module):
 
             seq, labels = seq[:, :-1], seq[:, 1:]
 
-        prompt_mask = prompt != self.pad_id
+        # if only one prompt is given with multiple augmentation llms, then just feed that one prompt into all augment llm
+
+        if not isinstance(prompt, tuple):
+            prompts = (prompt,) * len(self.augment_llms)
+        else:
+            prompts = prompt
+
+        prompt_masks = [p != self.pad_id for p in prompt]
 
         # invoke the augment llm, gathering up the hidden states with the forward hook
 
         with torch.no_grad():
-            augment_llm_kwarg = dict()
-
-            if exists(self.forward_mask_to_augment_llm_key):
-                augment_llm_kwarg = {self.forward_mask_to_augment_llm_key: prompt_mask}
 
             self.augment_llms.eval()
-            [augment_llm(prompt) for augment_llm in self.augment_llms]
+
+            for augment_llm, prompt, prompt_mask in zip(self.augment_llms, prompts, prompt_masks):
+                augment_llm_kwarg = dict()
+
+                if exists(self.forward_mask_to_augment_llm_key):
+                    augment_llm_kwarg = {self.forward_mask_to_augment_llm_key: prompt_mask}
+
+                augment_llm(prompt, **augment_llm_kwarg)
 
         # set the context mask for the cross attention
 
