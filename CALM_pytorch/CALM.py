@@ -325,6 +325,7 @@ class CALM(Module):
     def parameters(self):
         return self.cross_attns.parameters()
 
+    @beartype
     def forward(
         self,
         seq: Tensor,
