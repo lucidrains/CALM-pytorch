@@ -114,6 +114,7 @@ calm = CALM(
 
 - [ ] handle a wrapper or function that takes in the sequence and prompt length, and auto derives the inputs to CALM
 - [ ] show example of manually passing in list of transformer blocks as `List[Module]`. try out with some popular pretrained models
+- [ ] add an option for self attention path way with memory tokens attending to hidden states of all augmentation llms, akin to what was done with <a href="https://github.com/lucidrains/zorro-pytorch">Zorro</a>
 
 ## Citations
 
