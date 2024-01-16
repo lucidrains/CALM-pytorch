@@ -351,6 +351,8 @@ class CALM(Module):
         else:
             prompts = prompt
 
+        assert len(prompts) == len(self.augment_llms)
+
         prompt_masks = [p != self.pad_id for p in prompt]
 
         # invoke the augment llm, gathering up the hidden states with the forward hook
