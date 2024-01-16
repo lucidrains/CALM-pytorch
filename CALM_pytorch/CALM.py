@@ -1,5 +1,6 @@
-from pathlib import Path
 from math import ceil
+from pathlib import Path
+from functools import partial
 from contextlib import nullcontext
 
 import torch
@@ -11,7 +12,7 @@ from torch import nn, einsum, Tensor
 
 from beartype import beartype
 from beartype.door import is_bearable
-from beartype.typing import List, Optional, Callable, Type, Tuple, Union
+from beartype.typing import List, Optional, Callable, Type, Tuple, Union, Literal
 
 from einops import rearrange, repeat
 
@@ -67,12 +68,21 @@ def x_transformer_blocks(transformer: Module) -> List[Module]:
 # helper classes
 
 class Recorder:
-    def __init__(self):
+    @beartype
+    def __init__(
+        self,
+        forward_hook_get_hidden: Union[
+            Literal['output'],
+            Literal['input']
+        ] = 'output'
+    ):
         self.output = None
+        self.forward_hook_get_hidden = forward_hook_get_hidden
 
-    def __call__(self, _, __, out):
+    def __call__(self, _, inp, output):
         assert not exists(self.output)
-        self.output = out.detach()
+        hidden = output if self.forward_hook_get_hidden == 'output' else inp
+        self.output = hidden.detach()
 
     def pop_saved(self):
         output = self.output
@@ -91,6 +101,10 @@ class CrossAttentionBlock(Module):
         recorder: Recorder,
         linear_project_context = True,  # in the paper, they do a projection on the augmented hidden states. not sure if this is needed though, but better to be accurate first
         pre_rmsnorm = False,
+        forward_hook_get_hidden: Union[
+            Literal['output'],
+            Literal['input']
+        ] = 'output',
         **kwargs
     ):
         super().__init__()
@@ -112,6 +126,7 @@ class CrossAttentionBlock(Module):
         )
 
         self.context_mask = None
+        self.forward_hook_get_hidden = forward_hook_get_hidden
 
     def set_mask(self, mask: Tensor):
         self.context_mask = mask
@@ -119,7 +134,8 @@ class CrossAttentionBlock(Module):
     def unset_mask(self):
         self.context_mask = None
 
-    def forward(self, _, __, x):
+    def forward(self, _, inp, out):
+        x = out if self.forward_hook_get_hidden == 'output' else inp
 
         context = self.recorder.pop_saved()
         maybe_enable_grad = torch.enable_grad if self.training else nullcontext
@@ -156,6 +172,7 @@ class CALM(Module):
         augment_transformer_blocks: Optional[Union[List[List[Module]], List[Module]]] = None,
         anchor_transformer_blocks: Optional[List[Module]] = None,
         anchor_to_augment_blocks: Optional[List[Tuple[List[Module], List[Module]]]] = None,
+        forward_hook_get_hidden: Union[Literal['input'], Literal['output']] = 'output',
         pad_id = -1
     ):
         super().__init__()
@@ -245,8 +262,13 @@ class CALM(Module):
             augment_dims = []
 
             temp_hooks = []
-            get_anchor_dims = lambda _, __, out: anchor_dims.append(out.shape[-1])
-            get_augment_dims = lambda _, __, out: augment_dims.append(out.shape[-1])
+
+            def get_shape(shapes_arr, _, inp, out):
+                hiddens = out if forward_hook_get_hidden == 'output' else inp
+                shapes_arr.append(hiddens.shape[-1])
+
+            get_anchor_dims = partial(get_shape, anchor_dims)
+            get_augment_dims = partial(get_shape, augment_dims)
 
             for anchor_block, augment_block in zip(anchor_blocks_to_hook, augment_blocks_to_hook):
                 temp_hooks.append(anchor_block.register_forward_hook(get_anchor_dims))
@@ -272,9 +294,9 @@ class CALM(Module):
             one_augment_llm_cross_attns = ModuleList([])
 
             for dim_anchor, dim_augment, _ in zip(anchor_dims, augment_dims, range(num_cross_attns)):
-                recorder = Recorder()
+                recorder = Recorder(forward_hook_get_hidden = forward_hook_get_hidden)
                 recorders.append(recorder)
-                one_augment_llm_cross_attns.append(CrossAttentionBlock(dim = dim_anchor, dim_context = dim_augment, recorder = recorder, **attn_kwargs))
+                one_augment_llm_cross_attns.append(CrossAttentionBlock(dim = dim_anchor, dim_context = dim_augment, recorder = recorder, forward_hook_get_hidden = forward_hook_get_hidden, **attn_kwargs))
 
             # connect the two models
 
