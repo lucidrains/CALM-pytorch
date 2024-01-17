@@ -331,6 +331,7 @@ class CALM(Module):
         seq: Tensor,
         *,
         prompt: Union[Tensor, Tuple[Tensor, ...]],
+        prompt_mask: Optional[Union[Tensor, Tuple[Tensor, ...]]] = None,
         mask: Optional[Tensor] = None,
         return_loss = True,
         anchor_llm_in_train_mode = True  # unsure about this
@@ -347,14 +348,26 @@ class CALM(Module):
 
         # if only one prompt is given with multiple augmentation llms, then just feed that one prompt into all augment llm
 
+        num_augment_llms = len(self.augment_llms)
+
         if not isinstance(prompt, tuple):
-            prompts = (prompt,) * len(self.augment_llms)
+            prompts = (prompt,) * num_augment_llms
         else:
             prompts = prompt
 
-        assert len(prompts) == len(self.augment_llms)
+        assert len(prompts) == num_augment_llms
 
-        prompt_masks = [p != self.pad_id for p in prompt]
+        # prompt masks
+
+        if not exists(prompt_mask):
+            prompt_mask = tuple(p != self.pad_id for p in prompts)
+
+        if not isinstance(prompt_mask, tuple):
+            prompt_mask = (prompt_mask,) * num_augment_llms
+
+        prompt_masks = prompt_mask # at this point, should be plural
+
+        assert len(prompt_masks) == num_augment_llms
 
         # invoke the augment llm, gathering up the hidden states with the forward hook
 
