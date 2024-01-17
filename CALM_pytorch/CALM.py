@@ -34,6 +34,13 @@ from pytorch_custom_utils.accelerate_utils import (
     model_forward_contexts
 )
 
+# types
+
+Sequence = Union[Tuple, List]
+
+def SequenceOf(t):
+    return Union[Tuple[t, ...], List[t]]
+
 # helpers
 
 def exists(v):
@@ -330,8 +337,8 @@ class CALM(Module):
         self,
         seq: Tensor,
         *,
-        prompt: Union[Tensor, Tuple[Tensor, ...]],
-        prompt_mask: Optional[Union[Tensor, Tuple[Tensor, ...]]] = None,
+        prompt: Union[Tensor, SequenceOf(Tensor)],
+        prompt_mask: Optional[Union[Tensor, SequenceOf(Tensor)]] = None,
         mask: Optional[Tensor] = None,
         return_loss = True,
         anchor_llm_in_train_mode = True  # unsure about this
@@ -350,7 +357,7 @@ class CALM(Module):
 
         num_augment_llms = len(self.augment_llms)
 
-        if not isinstance(prompt, tuple):
+        if not is_bearable(prompt, Sequence):
             prompts = (prompt,) * num_augment_llms
         else:
             prompts = prompt
@@ -362,7 +369,7 @@ class CALM(Module):
         if not exists(prompt_mask):
             prompt_mask = tuple(p != self.pad_id for p in prompts)
 
-        if not isinstance(prompt_mask, tuple):
+        if not is_bearable(prompt_mask, Sequence):
             prompt_mask = (prompt_mask,) * num_augment_llms
 
         prompt_masks = prompt_mask # at this point, should be plural
