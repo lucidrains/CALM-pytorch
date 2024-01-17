@@ -108,9 +108,11 @@ calm = CALM(
 - [x] take care of finetuning training logic
 - [x] extend to a list of augmentation llms
     - [x] full connectivity customization
+    - [x] make simple vit work
+        - [ ] show example
+        - [ ] refactor so extraction fn, mask kwarg, and other related hparams are grouped together under a dictionary of {[augment_llm_name]: {augment_llm_related_hparams}}
     - [ ] custom number of augmentation layers per augmetation llm
     - [ ] move the hook logic for deriving hidden shapes to pytorch-custom-utils for reuse
-    - [ ] show an example of two augmentation llms with different prompts, one vision transformer, the other text-based
 
 - [ ] handle a wrapper or function that takes in the sequence and prompt length, and auto derives the inputs to CALM
 - [ ] show example of manually passing in list of transformer blocks as `List[Module]`. try out with some popular pretrained models
