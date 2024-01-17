@@ -214,6 +214,8 @@ class CALM(Module):
         freeze_all_layers_(self.anchor_llm)
         freeze_all_layers_(self.augment_llms)
 
+        num_augment_llms = len(self.augment_llms)
+
         # the only parameters being learned are a bunch of cross attention layers
         # attending from anchor to augmentation model(s)
 
@@ -233,6 +235,8 @@ class CALM(Module):
         if not transformer_blocks_passed_in:
             get_anchor_blocks_fn = x_transformer_blocks if isinstance(anchor_llm, TransformerWrapper) else get_anchor_transformer_blocks_fn
             anchor_transformer_blocks = get_anchor_blocks_fn(self.anchor_llm)
+
+            augment_extract_layers_fn = cast_tuple(augment_extract_layers_fn, num_augment_llms)
 
             augment_transformer_blocks = []
 
@@ -262,9 +266,10 @@ class CALM(Module):
 
                 anchor_to_augment_blocks.append((anchor_blocks_to_hook, augment_blocks_to_hook))
 
-        assert len(anchor_to_augment_blocks) == len(self.augment_llms)
+        assert len(anchor_to_augment_blocks) == num_augment_llms
 
-        forward_hook_get_hidden = cast_tuple(forward_hook_get_hidden, len(self.augment_llms))
+        input_shape = cast_tuple(input_shape, num_augment_llms)
+        forward_hook_get_hidden = cast_tuple(forward_hook_get_hidden, num_augment_llms)
 
         # cross attend from anchor to augment llm using module forward hooks
 
