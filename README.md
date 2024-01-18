@@ -115,7 +115,7 @@ calm = CALM(
             (12, 4),
         ),
         (
-            (1, 6),    # 1st layer of anchor attends to 6th layer of augment 2
+            (1, 6),    # 1st layer of anchor attends to 6th layer of augment llm2
             (2, 6),
             (12, 12),
         ),
