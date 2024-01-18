@@ -138,6 +138,7 @@ calm = CALM(
         - [ ] refactor so extraction fn, mask kwarg, and other related hparams are grouped together under a dictionary of {[augment_llm_name]: {augment_llm_related_hparams}} - use `TypedDict` + beartype for validation
     - [ ] move the hook logic for deriving hidden shapes to pytorch-custom-utils for reuse
 
+- [ ] if anchor and augment transformer block modules are directly passed in (without extraction fn), run a dummy input through both networks and order them correctly using hooks
 - [ ] handle a wrapper or function that takes in the sequence and prompt length, and auto derives the inputs to CALM
 - [ ] add an option for self attention path way with memory tokens attending to hidden states of all augmentation llms, akin to what was done with <a href="https://github.com/lucidrains/zorro-pytorch">Zorro</a>
 - [ ] fix example for x-transformers, as in x-transformers, depth is actually depth x 2, taking hiddens from after attention and ff
