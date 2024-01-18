@@ -283,6 +283,9 @@ class CALM(Module):
 
             anchor_layer_indices, augment_layer_indices = tuple(zip(*connection))
 
+            assert all([1 <= i <= len(anchor_transformer_blocks) for i in anchor_layer_indices]), 'you specified anchor llm layers outside of actual number of layers'
+            assert all([1 <= i <= len(one_augment_transformer_blocks) for i in augment_layer_indices]), 'you specified augment llm layers outside of actual number of layers'
+
             anchor_blocks_to_hook = [anchor_transformer_blocks[i - 1] for i in anchor_layer_indices]
             augment_blocks_to_hook = [one_augment_transformer_blocks[i - 1] for i in augment_layer_indices]
 
