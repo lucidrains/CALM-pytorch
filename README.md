@@ -101,21 +101,44 @@ calm = CALM(
 )
 ```
 
+Say you want to explore different types of connectivity between anchor and augmentation model(s), just pass in the connections as a tuple of tuple integer pairs, specifying the anchor to augment layer number.
+
+```python
+calm = CALM(
+    anchor_llm = anchor_llm,
+    augment_llm = [augment_llm1, augment_llm2],
+    connections = [
+        (
+            (12, 1),   # 12th layer of anchor attends to 1st layer of augment llm1
+            (12, 2),
+            (12, 3),
+            (12, 4),
+        ),
+        (
+            (1, 6),    # 1st layer of anchor attends to 6th layer of augment 2
+            (2, 6),
+            (12, 12),
+        ),
+        # ... and so on, add vision transformers, whatever
+    ]
+)
+```
+
 ## Todo
 
 - [x] figure out how to correctly mask augment llm tokens
 - [x] auto-derive model dimensions with dummy input
 - [x] take care of finetuning training logic
+- [x] show example of manual definitions of custom connectivity between 2+ attention networks
 - [x] extend to a list of augmentation llms
     - [x] full connectivity customization
+    - [x] custom number of augmentation layers per augmetation llm
     - [x] make simple vit work
         - [ ] show example
-        - [ ] refactor so extraction fn, mask kwarg, and other related hparams are grouped together under a dictionary of {[augment_llm_name]: {augment_llm_related_hparams}}
-    - [ ] custom number of augmentation layers per augmetation llm
+        - [ ] refactor so extraction fn, mask kwarg, and other related hparams are grouped together under a dictionary of {[augment_llm_name]: {augment_llm_related_hparams}} - use `TypedDict` + beartype for validation
     - [ ] move the hook logic for deriving hidden shapes to pytorch-custom-utils for reuse
 
 - [ ] handle a wrapper or function that takes in the sequence and prompt length, and auto derives the inputs to CALM
-- [ ] show example of manually passing in list of transformer blocks as `List[Module]`. try out with some popular pretrained models
 - [ ] add an option for self attention path way with memory tokens attending to hidden states of all augmentation llms, akin to what was done with <a href="https://github.com/lucidrains/zorro-pytorch">Zorro</a>
 
 ## Citations

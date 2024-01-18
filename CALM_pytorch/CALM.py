@@ -181,6 +181,7 @@ class CALM(Module):
             pre_rmsnorm = True,
             flash = True
         ),
+        connections: Optional[SingularOrMany(Tuple[Tuple[int, int], ...],)] = None,
         input_shape: SingularOrMany(Optional[Tuple]) = None,
         forward_mask_to_augment_llm_key: SingularOrMany(Optional[str]) = None,   # if set, will forward the prompt_mask to the augment LLM (in case it is an encoder) with this key
         augment_every_num_layers: int = 4, # in the paper, they do 4
@@ -189,7 +190,6 @@ class CALM(Module):
         anchor_extract_layers_fn: Callable[[Module], List[Module]] = None,
         augment_transformer_blocks: Optional[Union[List[List[Module]], List[Module]]] = None,
         anchor_transformer_blocks: Optional[List[Module]] = None,
-        anchor_to_augment_blocks: Optional[List[Tuple[List[Module], List[Module]]]] = None,
         forward_hook_get_hidden: SingularOrMany(Union[Literal['input'], Literal['output']]) = 'output',
         anchor_forward_hook_get_hidden: Union[Literal['input'], Literal['output']] = 'output',
         pad_id: int = -1
@@ -204,6 +204,10 @@ class CALM(Module):
         if exists(augment_transformer_blocks):
             if is_bearable(augment_transformer_blocks, List[Module]):
                 augment_transformer_blocks = [augment_transformer_blocks]
+
+        if exists(connections):
+            if is_bearable(connections, Tuple[Tuple[int, int], ...]):
+                connections = [connections]
 
         # main contribution of paper
         # is showing that both anchor and augment can be frozen, and that cross attention from anchor -> augment every few layers outperforms lora
@@ -253,20 +257,38 @@ class CALM(Module):
 
         assert num_anchor_blocks > 0 and all([n > 0 for n in num_augment_blocks]), 'no layers found in either anchor or augment attention networks'
 
-        if not exists(anchor_to_augment_blocks):
-            anchor_to_augment_blocks = []
+        if not exists(connections):
+            connections = []
 
             for one_augment_transformer_blocks, one_num_augment_blocks in zip(augment_transformer_blocks, num_augment_blocks):
+
                 num_attended_augment_hiddens = ceil(one_num_augment_blocks / augment_every_num_layers)
                 num_cross_attending_anchor_blocks = min(num_attended_augment_hiddens, num_anchor_blocks)
                 anchor_every_num_layers = num_anchor_blocks // num_cross_attending_anchor_blocks
 
-                anchor_blocks_to_hook = anchor_transformer_blocks[::anchor_every_num_layers]
-                augment_blocks_to_hook = one_augment_transformer_blocks[::-1][::augment_every_num_layers][::-1]
+                anchor_layer_indices = [*range(0, len(anchor_transformer_blocks), anchor_every_num_layers)]
+                augment_layer_indices = [*range(0, len(one_augment_transformer_blocks), augment_every_num_layers)]
 
-                anchor_to_augment_blocks.append((anchor_blocks_to_hook, augment_blocks_to_hook))
+                connections.append(tuple(zip(anchor_layer_indices, augment_layer_indices)))
 
-        assert len(anchor_to_augment_blocks) == num_augment_llms
+        assert len(connections) == num_augment_llms
+
+        self.connections = connections
+
+        # from connections, get all paired transformer blocks between anchor and augments
+
+        anchor_to_augment_blocks = []
+
+        for connection, one_augment_transformer_blocks, one_num_augment_blocks in zip(connections, augment_transformer_blocks, num_augment_blocks):
+
+            anchor_layer_indices, augment_layer_indices = tuple(zip(*connection))
+
+            anchor_blocks_to_hook = [anchor_transformer_blocks[i - 1] for i in anchor_layer_indices]
+            augment_blocks_to_hook = [one_augment_transformer_blocks[i - 1] for i in augment_layer_indices]
+
+            anchor_to_augment_blocks.append((anchor_blocks_to_hook, augment_blocks_to_hook))
+
+        # for deriving hidden dimensions magically
 
         input_shape = cast_tuple(input_shape, num_augment_llms)
         forward_hook_get_hidden = cast_tuple(forward_hook_get_hidden, num_augment_llms)
