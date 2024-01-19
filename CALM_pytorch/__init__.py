@@ -1,1 +1,5 @@
-from CALM_pytorch.CALM import CALM, FineTuner
+from CALM_pytorch.CALM import (
+  AugmentParams,
+  CALM,
+  FineTuner
+)

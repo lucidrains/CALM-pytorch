@@ -46,12 +46,14 @@ anchor_llm = TransformerWrapper(
 
 # import CALM wrapper
 
-from CALM_pytorch import CALM
+from CALM_pytorch import CALM, AugmentParams
 
 calm = CALM(
     anchor_llm,
-    augment_llm,
-    augment_every_num_layers = 4
+    augment_llms = AugmentParams(
+        model = augment_llm,
+        connect_every_num_layers = 4
+    )
 )
 
 # mock input
@@ -106,21 +108,25 @@ Say you want to explore different types of connectivity between anchor and augme
 ```python
 calm = CALM(
     anchor_llm = anchor_llm,
-    augment_llm = [augment_llm1, augment_llm2],
-    connections = [
-        (
-            (12, 1),   # 12th layer of anchor attends to 1st layer of augment llm1
-            (12, 2),
-            (12, 3),
-            (12, 4),
+    augment_llms = (
+        AugmentParams(
+            model = augment_llm1,
+            connections = (
+                (12, 1),  # 12th layer of anchor attends to 1st layer of augment llm1
+                (12, 2),
+                (12, 3),
+                (12, 4),
+            ),
         ),
-        (
-            (1, 6),    # 1st layer of anchor attends to 6th layer of augment llm2
-            (2, 6),
-            (12, 12),
-        ),
-        # ... and so on, add vision transformers, whatever
-    ]
+        AugmentParams(
+            model = augment_llm2,
+            connections = (
+                (1, 6), # 1st layer of anchor attends to 6th layer of augment llm2
+                (2, 6),
+                (12, 12),
+            )
+        )
+    )
 )
 ```
 
@@ -136,8 +142,8 @@ calm = CALM(
     - [x] full connectivity customization
     - [x] custom number of augmentation layers per augmetation llm
     - [x] make simple vit work
+        - [x] refactor so extraction fn, mask kwarg, and other related hparams are grouped together under a dictionary of {[augment_llm_name]: {augment_llm_related_hparams}} - use dataclasses
         - [ ] show example
-        - [ ] refactor so extraction fn, mask kwarg, and other related hparams are grouped together under a dictionary of {[augment_llm_name]: {augment_llm_related_hparams}} - use `TypedDict` + beartype for validation
 
 - [ ] handle a wrapper or function that takes in the sequence and prompt length, and auto derives the inputs to CALM
 - [ ] add an option for self attention path way with memory tokens attending to hidden states of all augmentation llms, akin to what was done with <a href="https://github.com/lucidrains/zorro-pytorch">Zorro</a>
