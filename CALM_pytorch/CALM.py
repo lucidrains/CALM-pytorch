@@ -60,6 +60,9 @@ def xnor(x, y):
 def cast_tuple(t, length = 1):
     return t if is_bearable(t, Sequence) else ((t,) * length)
 
+def get_indices_of_src_from_tgt(src_arr, tgt_arr):
+    return [src_arr.index(el) for el in tgt_arr]
+
 # extract all forward inputs
 
 def extract_forward_inputs(
@@ -302,6 +305,19 @@ class CALM(Module):
         assert num_anchor_blocks > 0 and all([n > 0 for n in num_augment_blocks]), 'no layers found in either anchor or augment attention networks'
 
         anchor_outputs, *augments_outputs = all_outputs
+
+        # make sure the hidden positions are reordered based on the execution order
+
+        all_blocks = [*map(lambda outputs: [block for block, *_ in outputs],all_outputs)]
+        anchor_blocks, *augments_blocks = all_blocks
+
+        anchor_reorder_indices = get_indices_of_src_from_tgt(anchor_transformer_blocks, anchor_blocks)
+        augments_reorder_indices = [get_indices_of_src_from_tgt(params.transformer_blocks, augment_blocks) for params, augment_blocks in zip(augment_llms_params, augments_blocks)]
+
+        anchor_hidden_position = [anchor_hidden_position[i] for i in anchor_reorder_indices]
+
+        for params, augment_reorder_indices in zip(augment_llms_params, augments_reorder_indices):
+            params.hidden_position = [params.hidden_position[i] for i in augment_reorder_indices]
 
         # calculation for determining every Nth layer of augmentation layer hiddens is attended to
         # in paper, they did every 4th layer of 1 augmentation llm

@@ -237,6 +237,7 @@ loss.backward()
 - [x] show example of manual definitions of custom connectivity between 2+ attention networks
 - [x] if anchor and augment transformer block modules are directly passed in (without extraction fn), run a dummy input through both networks and order them correctly using hooks
 - [x] fix example for x-transformers, as in x-transformers, depth is actually depth x 2, taking hiddens from after attention and ff
+- [x] when finely specifying hidden positions, make sure to reorder it if the transformer blocks themselves were passed in and not ordered to begin with
 - [x] extend to a list of augmentation llms
     - [x] full connectivity customization
     - [x] custom number of augmentation layers per augmetation llm
@@ -244,7 +245,6 @@ loss.backward()
         - [x] refactor so extraction fn, mask kwarg, and other related hparams are grouped together under a dictionary of {[augment_llm_name]: {augment_llm_related_hparams}} - use dataclasses
         - [x] show example
 
-- [ ] when finely specifying hidden positions, make sure to reorder it if the transformer blocks themselves were passed in and not ordered to begin with
 - [ ] take care of caching the augment hiddens when sampling. forget about anchor kv cache for now
 - [ ] handle a wrapper or function that takes in the sequence and prompt length, and auto derives the inputs to CALM
 - [ ] add an option for self attention path way with memory tokens attending to hidden states of all augmentation llms, akin to what was done with <a href="https://github.com/lucidrains/zorro-pytorch">Zorro</a>
