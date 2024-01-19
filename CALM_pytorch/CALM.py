@@ -158,6 +158,9 @@ class CrossAttentionBlock(Module):
         self.recorder = recorder
         self.context_proj = None
 
+        self.dim = dim
+        self.dim_context = dim_context
+
         if linear_project_context:
             self.context_proj = nn.Linear(dim_context, dim)
             dim_context = dim
@@ -328,7 +331,6 @@ class CALM(Module):
         anchor_to_augment_outputs = []
 
         for connection, params, augment_outputs in zip(self.connections, augment_llms_params, augments_outputs):
-
             one_num_augment_blocks = len(augment_outputs)
 
             anchor_layer_indices, augment_layer_indices = tuple(zip(*connection))
@@ -378,7 +380,7 @@ class CALM(Module):
 
             # connect the two models
 
-            for (anchor_block, *_), recorder, cross_attn, (augment_block, *_) in zip(anchor_outputs, recorders, one_augment_llm_cross_attns, augment_outputs):
+            for ((anchor_block, *_), *_), recorder, cross_attn, ((augment_block, *_), *_) in zip(one_anchor_outputs_and_positions, recorders, one_augment_llm_cross_attns, one_augment_outputs_and_positions):
                 augment_block.register_forward_hook(recorder)
                 anchor_block.register_forward_hook(cross_attn)
 

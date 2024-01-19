@@ -125,10 +125,108 @@ calm = CALM(
                 (2, 6),
                 (12, 12),
             )
-        ),
-        # ... perhaps other modalities, vision / audio transformer etc
+        )
     )
 )
+```
+
+CALM setup with 2 specialized augmentation LLMs + a vision transformer
+
+```python
+import torch
+
+# pip install vit-pytorch x-transformers
+
+from vit_pytorch.vit import ViT, Attention
+from x_transformers import TransformerWrapper, Encoder, Decoder
+
+anchor_llm = TransformerWrapper(
+    num_tokens = 20000,
+    max_seq_len = 1024,
+    attn_layers = Decoder(
+        dim = 16,
+        dim_head = 2,
+        depth = 12,
+        heads = 8
+    )
+)
+
+augment_llm1 = TransformerWrapper(
+    num_tokens = 20000,
+    max_seq_len = 1024,
+    attn_layers = Encoder(
+        dim = 16,
+        dim_head = 2,
+        depth = 12,
+        heads = 8
+    )
+)
+
+augment_llm2 = TransformerWrapper(
+    num_tokens = 20000,
+    max_seq_len = 1024,
+    attn_layers = Encoder(
+        dim = 16,
+        dim_head = 2,
+        depth = 12,
+        heads = 8
+    )
+)
+
+vit = ViT(
+    image_size = 256,
+    patch_size = 32,
+    num_classes = 1000,
+    dim = 256,
+    depth = 6,
+    heads = 16,
+    mlp_dim = 2048
+)
+
+# calm
+
+from CALM_pytorch import CALM, AugmentParams, FineTuner
+
+calm = CALM(
+    anchor_llm = anchor_llm,
+    augment_llms = (
+        AugmentParams(
+            model = augment_llm1,
+            mask_kwarg = 'mask'
+        ),
+        AugmentParams(
+            model = augment_llm2,
+            mask_kwarg = 'mask'
+        ),
+        AugmentParams(
+            model = vit,
+            input_shape = (3, 256, 256),
+            extract_blocks_fn = lambda vit: [m for m in vit.modules() if isinstance(m, Attention)]
+        )
+    ),
+    attn_kwargs = dict(
+        linear_project_context = True,
+        pre_rmsnorm = True,
+        flash = True
+    )
+)
+
+seq = torch.randint(0, 20000, (1, 1024))
+mask = torch.ones((1, 1024)).bool()
+
+prompt = (
+    torch.randint(0, 20000, (1, 256)),
+    torch.randint(0, 20000, (1, 256)),
+    torch.randn(1, 3, 256, 256)
+)
+
+loss = calm(
+    seq,
+    mask = mask,
+    prompt = prompt
+)
+
+loss.backward()
 ```
 
 ## Todo
@@ -144,7 +242,7 @@ calm = CALM(
     - [x] custom number of augmentation layers per augmetation llm
     - [x] make simple vit work
         - [x] refactor so extraction fn, mask kwarg, and other related hparams are grouped together under a dictionary of {[augment_llm_name]: {augment_llm_related_hparams}} - use dataclasses
-        - [ ] show example
+        - [x] show example
 
 - [ ] when finely specifying hidden positions, make sure to reorder it if the transformer blocks themselves were passed in and not ordered to begin with
 - [ ] take care of caching the augment hiddens when sampling. forget about anchor kv cache for now
