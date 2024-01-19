@@ -58,6 +58,33 @@ def xnor(x, y):
 def cast_tuple(t, length = 1):
     return t if is_bearable(t, Sequence) else ((t,) * length)
 
+# extract all forward inputs
+
+def extract_forward_inputs(
+    model: Module,
+    input: Tensor,
+    blocks: List[Module]
+):
+    assert len(blocks) > 0
+
+    outputs = []
+
+    def record(*args):
+        outputs.append(args)
+
+    hooks = []
+    for block in blocks:
+        hook = block.register_forward_hook(record)
+        hooks.append(hook)
+
+    with torch.no_grad():
+        model(input)
+
+    for hook in hooks:
+        hook.remove()
+
+    return outputs
+
 # freezing llms
 
 @beartype
@@ -75,7 +102,7 @@ def freeze_all_layers_(module):
 # ex. for x-transformers TransformerWrapper
 
 @beartype
-def x_transformer_blocks(transformer: Module) -> List[Module]:
+def x_transformer_blocks(transformer: TransformerWrapper) -> List[Module]:
     blocks = []
     for layer in transformer.attn_layers.layers:
         blocks.append(layer[-1])
@@ -190,8 +217,8 @@ class CALM(Module):
         anchor_extract_layers_fn: Callable[[Module], List[Module]] = None,
         augment_transformer_blocks: Optional[Union[List[List[Module]], List[Module]]] = None,
         anchor_transformer_blocks: Optional[List[Module]] = None,
-        forward_hook_get_hidden: SingularOrMany(Union[Literal['input'], Literal['output']]) = 'output',
-        anchor_forward_hook_get_hidden: Union[Literal['input'], Literal['output']] = 'output',
+        anchor_get_hidden_position: Union[Literal['input'], Literal['output']] = 'output',
+        augment_get_hidden_positions: SingularOrMany(Union[Literal['input'], Literal['output']]) = 'output',
         pad_id: int = -1
     ):
         super().__init__()
@@ -226,20 +253,13 @@ class CALM(Module):
         self.cross_attns = nn.ModuleList([])
 
         # determine the transformer blocks involved
-        # first determine if the blocks are already passed in
+        # derive the blocks from the model and extraction function, if not
 
-        assert xnor(exists(augment_transformer_blocks), exists(anchor_transformer_blocks))
-
-        transformer_blocks_passed_in = exists(augment_transformer_blocks) and exists(anchor_transformer_blocks)
-
-        # if list of transformer blocks for anchor and augment LLM not passed in, then derive it
-
-        # match up blocks from anchor to augment LLM, accounting for potential differences in depth
-
-        if not transformer_blocks_passed_in:
+        if not exists(anchor_transformer_blocks):
             get_anchor_blocks_fn = x_transformer_blocks if isinstance(anchor_llm, TransformerWrapper) else get_anchor_transformer_blocks_fn
             anchor_transformer_blocks = get_anchor_blocks_fn(self.anchor_llm)
 
+        if not exists(augment_transformer_blocks):
             augment_extract_layers_fn = cast_tuple(augment_extract_layers_fn, num_augment_llms)
 
             augment_transformer_blocks = []
@@ -249,24 +269,50 @@ class CALM(Module):
                 assert exists(extract)
                 augment_transformer_blocks.append(extract(augment_llm))
 
-        # calculation for determining every Nth layer of augmentation layer hiddens is attended to
-        # in paper, they did every 4th layer of 1 augmentation llm
+        # extract all forward outputs from all transformer blocks
+        # for sanitizing the input (making sure transformer blocks are ordered by execution)
+        # and for magically determining hidden dimensions for cross attention
 
-        num_anchor_blocks = len(anchor_transformer_blocks)
-        num_augment_blocks = [len(block) for block in augment_transformer_blocks]
+        default_transformer_input = torch.ones((1, 1), dtype = torch.long)
+
+        recording_inputs = [default_transformer_input]
+
+        input_shapes = cast_tuple(input_shape, num_augment_llms)
+
+        for maybe_one_input_shape in input_shapes:
+            if exists(maybe_one_input_shape):
+                inp = torch.randn((1, *maybe_one_input_shape))
+            else:
+                inp = default_transformer_input
+
+            recording_inputs.append(inp)
+
+        all_blocks = [anchor_transformer_blocks, *augment_transformer_blocks]
+        all_models = [anchor_llm, *augment_llms]
+
+        all_outputs = [extract_forward_inputs(model, recording_input, blocks) for model, recording_input, blocks in zip(all_models, recording_inputs, all_blocks)]
+
+        num_anchor_blocks, *num_augment_blocks = [*map(len, all_outputs)]
 
         assert num_anchor_blocks > 0 and all([n > 0 for n in num_augment_blocks]), 'no layers found in either anchor or augment attention networks'
+
+        anchor_outputs, *augments_outputs = all_outputs
+
+        # calculation for determining every Nth layer of augmentation layer hiddens is attended to
+        # in paper, they did every 4th layer of 1 augmentation llm
 
         if not exists(connections):
             connections = []
 
-            for one_augment_transformer_blocks, one_num_augment_blocks in zip(augment_transformer_blocks, num_augment_blocks):
+            for augment_outputs in augments_outputs:
+
+                one_num_augment_blocks = len(augment_outputs)
 
                 num_attended_augment_hiddens = ceil(one_num_augment_blocks / augment_every_num_layers)
                 num_cross_attending_anchor_blocks = min(num_attended_augment_hiddens, num_anchor_blocks)
                 anchor_every_num_layers = num_anchor_blocks // num_cross_attending_anchor_blocks
 
-                anchor_layer_indices = [*range(0, len(anchor_transformer_blocks), anchor_every_num_layers)]
+                anchor_layer_indices = [*range(0, len(anchor_outputs), anchor_every_num_layers)]
                 augment_layer_indices = [*range(0, len(one_augment_transformer_blocks), augment_every_num_layers)]
 
                 connections.append(tuple(zip(anchor_layer_indices, augment_layer_indices)))
@@ -277,87 +323,62 @@ class CALM(Module):
 
         # from connections, get all paired transformer blocks between anchor and augments
 
-        anchor_to_augment_blocks = []
+        anchor_to_augment_outputs = []
 
-        for connection, one_augment_transformer_blocks, one_num_augment_blocks in zip(connections, augment_transformer_blocks, num_augment_blocks):
+        for connection, augment_outputs in zip(connections, augments_outputs):
+
+            one_num_augment_blocks = len(augment_outputs)
 
             anchor_layer_indices, augment_layer_indices = tuple(zip(*connection))
 
-            assert all([1 <= i <= len(anchor_transformer_blocks) for i in anchor_layer_indices]), 'you specified anchor llm layers outside of actual number of layers'
-            assert all([1 <= i <= len(one_augment_transformer_blocks) for i in augment_layer_indices]), 'you specified augment llm layers outside of actual number of layers'
+            assert all([1 <= i <= len(anchor_outputs) for i in anchor_layer_indices]), 'you specified anchor llm layers outside of actual number of layers'
+            assert all([1 <= i <= len(augment_outputs) for i in augment_layer_indices]), 'you specified augment llm layers outside of actual number of layers'
 
-            anchor_blocks_to_hook = [anchor_transformer_blocks[i - 1] for i in anchor_layer_indices]
-            augment_blocks_to_hook = [one_augment_transformer_blocks[i - 1] for i in augment_layer_indices]
+            one_anchor_outputs = [anchor_outputs[i - 1] for i in anchor_layer_indices]
+            one_augment_outputs = [augment_outputs[i - 1] for i in augment_layer_indices]
 
-            anchor_to_augment_blocks.append((anchor_blocks_to_hook, augment_blocks_to_hook))
+            anchor_to_augment_outputs.append(
+                (one_anchor_outputs, one_augment_outputs)
+            )
 
         # for deriving hidden dimensions magically
 
-        input_shape = cast_tuple(input_shape, num_augment_llms)
-        forward_hook_get_hidden = cast_tuple(forward_hook_get_hidden, num_augment_llms)
+        augment_get_hidden_positions = cast_tuple(augment_get_hidden_positions, num_augment_llms)
 
-        # cross attend from anchor to augment llm using module forward hooks
+        # function for getting output or input dimension
+        # depending on get_hidden_position
 
-        all_anchor_dims = []
-        all_augment_dims = []
-
-        for (anchor_blocks_to_hook, augment_blocks_to_hook), augment_llm, position, maybe_one_input_shape in zip(anchor_to_augment_blocks, self.augment_llms, forward_hook_get_hidden, input_shape):
-
-            # number of cross attention for one augmentation llm
-
-            num_cross_attns = min(len(augment_blocks_to_hook), len(anchor_blocks_to_hook))
-
-            # use forward hook to automatically figure out model dimensions for augment and anchor models
-
-            anchor_dims = []
-            augment_dims = []
-
-            temp_hooks = []
-
-            def get_shape(shapes_arr, _, inp, out):
-                hiddens = out if position == 'output' else inp
-                shapes_arr.append(hiddens.shape[-1])
-
-            get_anchor_dims = partial(get_shape, anchor_dims)
-            get_augment_dims = partial(get_shape, augment_dims)
-
-            for anchor_block, augment_block in zip(anchor_blocks_to_hook, augment_blocks_to_hook):
-                temp_hooks.append(anchor_block.register_forward_hook(get_anchor_dims))
-                temp_hooks.append(augment_block.register_forward_hook(get_augment_dims))
-
-            default_dummy_input = torch.ones((1, 1), dtype = torch.long)
-
-            if exists(maybe_one_input_shape):
-                augment_dummy_input = torch.randn((1, *maybe_one_input_shape))
-            else:
-                augment_dummy_input = default_dummy_input
-
-            self.anchor_llm(default_dummy_input)
-            augment_llm(augment_dummy_input)
-
-            # unregister temporary hooks
-
-            for hook in temp_hooks:
-                hook.remove()
-
-            all_anchor_dims.append(anchor_dims)
-            all_augment_dims.append(augment_dims)
+        def get_hidden_dim(hook_output: Tuple[Module, Tensor, Tensor], position: Union[Literal['input'], Literal['output']]):
+            _, input_tensor, output_tensor = hook_output
+            tensor = output_tensor if position == 'output' else input_tensor
+            return tensor.shape[-1]
 
         # instantiate cross attentions
 
-        for anchor_dims, augment_dims, (anchor_blocks_to_hook, augment_blocks_to_hook), augment_llm, position in zip(all_anchor_dims, all_augment_dims, anchor_to_augment_blocks, self.augment_llms, forward_hook_get_hidden):
+        for (one_anchor_outputs, one_augment_outputs), augment_llm, augment_position in zip(anchor_to_augment_outputs, self.augment_llms, augment_get_hidden_positions):
+
+            # number of cross attention for one augmentation llm
+
+            num_cross_attns = min(len(one_augment_outputs), len(one_anchor_outputs))
+
+            # get anchor dims
+
+            anchor_dims = [get_hidden_dim(one_anchor_output, anchor_get_hidden_position) for one_anchor_output in one_anchor_outputs]
+            augment_dims = [get_hidden_dim(one_augment_output, augment_position) for one_augment_output in one_augment_outputs]
+
+            # cross attentions for one augmentation llm
 
             recorders = []
             one_augment_llm_cross_attns = ModuleList([])
 
             for dim_anchor, dim_augment, _ in zip(anchor_dims, augment_dims, range(num_cross_attns)):
-                recorder = Recorder(forward_hook_get_hidden = position)
+                recorder = Recorder(forward_hook_get_hidden = augment_position)
                 recorders.append(recorder)
-                one_augment_llm_cross_attns.append(CrossAttentionBlock(dim = dim_anchor, dim_context = dim_augment, recorder = recorder, forward_hook_get_hidden = anchor_forward_hook_get_hidden, **attn_kwargs))
+                one_augment_llm_cross_attns.append(CrossAttentionBlock(dim = dim_anchor, dim_context = dim_augment, recorder = recorder, forward_hook_get_hidden = anchor_get_hidden_position, **attn_kwargs))
 
             # connect the two models
 
-            for anchor_block, recorder, cross_attn, augment_block in zip(anchor_blocks_to_hook, recorders, one_augment_llm_cross_attns, augment_blocks_to_hook):
+            for (anchor_block, *_), recorder, cross_attn, (augment_block, *_) in zip(anchor_outputs, recorders, one_augment_llm_cross_attns, augment_outputs):
                 augment_block.register_forward_hook(recorder)
                 anchor_block.register_forward_hook(cross_attn)
 
