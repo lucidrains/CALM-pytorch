@@ -106,7 +106,7 @@ def x_transformer_blocks(transformer: TransformerWrapper) -> List[Module]:
     blocks = []
     for layer in transformer.attn_layers.layers:
         blocks.append(layer[-1])
-    return blocks
+    return blocks[1::2]
 
 # helper classes
 

@@ -131,6 +131,7 @@ calm = CALM(
 - [x] take care of finetuning training logic
 - [x] show example of manual definitions of custom connectivity between 2+ attention networks
 - [x] if anchor and augment transformer block modules are directly passed in (without extraction fn), run a dummy input through both networks and order them correctly using hooks
+- [x] fix example for x-transformers, as in x-transformers, depth is actually depth x 2, taking hiddens from after attention and ff
 - [x] extend to a list of augmentation llms
     - [x] full connectivity customization
     - [x] custom number of augmentation layers per augmetation llm
@@ -140,7 +141,6 @@ calm = CALM(
 
 - [ ] handle a wrapper or function that takes in the sequence and prompt length, and auto derives the inputs to CALM
 - [ ] add an option for self attention path way with memory tokens attending to hidden states of all augmentation llms, akin to what was done with <a href="https://github.com/lucidrains/zorro-pytorch">Zorro</a>
-- [ ] fix example for x-transformers, as in x-transformers, depth is actually depth x 2, taking hiddens from after attention and ff
 
 ## Citations
 
