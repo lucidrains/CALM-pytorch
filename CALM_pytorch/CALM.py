@@ -189,6 +189,10 @@ class CrossAttentionBlock(Module):
 
         self.context_mask = None
         self.forward_hook_get_hidden = forward_hook_get_hidden
+        self.release_recorder_output = True
+
+    def set_release_recorder_output(self, release_recorder_output: bool):
+        self.release_recorder_output = release_recorder_output
 
     def set_mask(self, mask: Tensor):
         self.context_mask = mask
@@ -199,7 +203,13 @@ class CrossAttentionBlock(Module):
     def forward(self, *hook_args):
         x = get_block_output_from_hook_outputs(self.forward_hook_get_hidden, *hook_args)
 
-        context = self.recorder.pop_saved()
+        if self.release_recorder_output:
+            context = self.recorder.pop_saved()
+        else:
+            context = self.recorder.output
+
+        assert exists(context)
+
         maybe_enable_grad = torch.enable_grad if self.training else nullcontext
 
         with maybe_enable_grad():
