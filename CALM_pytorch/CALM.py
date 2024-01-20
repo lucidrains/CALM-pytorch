@@ -40,6 +40,8 @@ from pytorch_custom_utils.accelerate_utils import (
 
 Sequence = Union[Tuple, List]
 
+HiddenPosition = Union[Literal['input'], Literal['output']]
+
 def SequenceOf(t):
     return Union[Tuple[t, ...], List[t]]
 
@@ -63,7 +65,10 @@ def cast_tuple(t, length = 1):
 def get_indices_of_src_from_tgt(src_arr, tgt_arr):
     return [src_arr.index(el) for el in tgt_arr]
 
-def get_block_output_from_hook_outputs(hidden_position, _, inp, out):
+def get_block_output_from_hook_outputs(
+    hidden_position: HiddenPosition,
+    _, inp, out
+):
     maybe_tensor = out if hidden_position == 'output' else inp
 
     if isinstance(maybe_tensor, tuple):
@@ -128,10 +133,7 @@ class Recorder:
     @beartype
     def __init__(
         self,
-        forward_hook_get_hidden: Union[
-            Literal['output'],
-            Literal['input']
-        ] = 'output'
+        forward_hook_get_hidden: HiddenPosition = 'output'
     ):
         self.output = None
         self.get_output_fn = partial(get_block_output_from_hook_outputs, forward_hook_get_hidden)
@@ -194,8 +196,8 @@ class CrossAttentionBlock(Module):
     def unset_mask(self):
         self.context_mask = None
 
-    def forward(self, _, inp, out):
-        x = out if self.forward_hook_get_hidden == 'output' else inp
+    def forward(self, *hook_args):
+        x = get_block_output_from_hook_outputs(self.forward_hook_get_hidden, *hook_args)
 
         context = self.recorder.pop_saved()
         maybe_enable_grad = torch.enable_grad if self.training else nullcontext
@@ -216,7 +218,7 @@ class CrossAttentionBlock(Module):
 @dataclass
 class AugmentParams:
     model: Module
-    hidden_position: SingularOrMany(Union[Literal['input'], Literal['output']]) = 'output'
+    hidden_position: SingularOrMany(HiddenPosition) = 'output'
     transformer_blocks: Optional[List[Module]] = None
     extract_blocks_fn: Optional[Callable[[Module], List[Module]]] = None
     input_shape: Optional[Tuple[int, ...]] = None
@@ -238,7 +240,7 @@ class CALM(Module):
         ),
         anchor_extract_blocks_fn: Callable[[Module], List[Module]] = None,
         anchor_transformer_blocks: Optional[List[Module]] = None,
-        anchor_hidden_position: SingularOrMany(Union[Literal['input'], Literal['output']]) = 'output',
+        anchor_hidden_position: SingularOrMany(HiddenPosition) = 'output',
         pad_id: int = -1
     ):
         super().__init__()
@@ -373,7 +375,7 @@ class CALM(Module):
         # function for getting output or input dimension
         # depending on get_hidden_position
 
-        def get_hidden_dim(hook_output: Tuple[Module, Tensor, Tensor], position: Union[Literal['input'], Literal['output']]):
+        def get_hidden_dim(hook_output, position: HiddenPosition):
             maybe_tensor = get_block_output_from_hook_outputs(position, *hook_output)
             return maybe_tensor.shape[-1]
 
