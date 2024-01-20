@@ -201,6 +201,7 @@ calm = CALM(
         AugmentParams(
             model = vit,
             input_shape = (3, 256, 256),
+            hidden_position = 'input',
             extract_blocks_fn = lambda vit: [m for m in vit.modules() if isinstance(m, Attention)]
         )
     ),

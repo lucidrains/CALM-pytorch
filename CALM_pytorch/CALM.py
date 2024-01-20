@@ -63,6 +63,15 @@ def cast_tuple(t, length = 1):
 def get_indices_of_src_from_tgt(src_arr, tgt_arr):
     return [src_arr.index(el) for el in tgt_arr]
 
+def get_block_output_from_hook_outputs(hidden_position, _, inp, out):
+    maybe_tensor = out if hidden_position == 'output' else inp
+
+    if isinstance(maybe_tensor, tuple):
+        maybe_tensor = maybe_tensor[0]
+
+    assert torch.is_tensor(maybe_tensor)
+    return maybe_tensor
+
 # extract all forward inputs
 
 def extract_forward_inputs(
@@ -125,11 +134,11 @@ class Recorder:
         ] = 'output'
     ):
         self.output = None
-        self.forward_hook_get_hidden = forward_hook_get_hidden
+        self.get_output_fn = partial(get_block_output_from_hook_outputs, forward_hook_get_hidden)
 
-    def __call__(self, _, inp, output):
+    def __call__(self, *args):
         assert not exists(self.output)
-        hidden = output if self.forward_hook_get_hidden == 'output' else inp
+        hidden = self.get_output_fn(*args)
         self.output = hidden.detach()
 
     def pop_saved(self):
@@ -365,9 +374,8 @@ class CALM(Module):
         # depending on get_hidden_position
 
         def get_hidden_dim(hook_output: Tuple[Module, Tensor, Tensor], position: Union[Literal['input'], Literal['output']]):
-            _, input_tensor, output_tensor = hook_output
-            tensor = output_tensor if position == 'output' else input_tensor
-            return tensor.shape[-1]
+            maybe_tensor = get_block_output_from_hook_outputs(position, *hook_output)
+            return maybe_tensor.shape[-1]
 
         # instantiate cross attentions
 
