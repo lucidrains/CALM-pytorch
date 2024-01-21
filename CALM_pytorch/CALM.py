@@ -143,10 +143,13 @@ class Recorder:
         hidden = self.get_output_fn(*args)
         self.output = hidden.detach()
 
-    def pop_saved(self):
+    def release_saved_(self):
+        self.output = None
+
+    def pop_saved_(self):
         output = self.output
         assert exists(output)
-        self.output = None
+        self.release_saved_()
         return output
 
 # cross attention wrapper class
@@ -204,7 +207,7 @@ class CrossAttentionBlock(Module):
         x = get_block_output_from_hook_outputs(self.forward_hook_get_hidden, *hook_args)
 
         if self.release_recorder_output:
-            context = self.recorder.pop_saved()
+            context = self.recorder.pop_saved_()
         else:
             context = self.recorder.output
 
@@ -440,6 +443,16 @@ class CALM(Module):
 
     def parameters(self):
         return self.cross_attns.parameters()
+
+    def set_release_recorder_output(self, release_recorder_output: bool):
+        for module in self.modules():
+            if isinstance(module, CrossAttentionBlock):
+                module.release_recorder_output = release_recorder_output
+
+    def clear_recorded_augment_hiddens(self):
+        for module in self.modules():
+            if isinstance(module, CrossAttentionBlock):
+                module.recorder.release_saved_()
 
     @beartype
     def forward(

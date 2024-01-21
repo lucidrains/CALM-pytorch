@@ -248,7 +248,8 @@ loss.backward()
 
 - [ ] take care of caching the augment hiddens when sampling. forget about anchor kv cache for now
     - [x] logic for not releasing the saved output from recorder, for inference
-    - [ ] use a contextmanager for managing cross attention block state for popping the saved output from the recorder
+    - [x] managing cross attention block state for popping the saved output from the recorder
+    - [ ] move the augmentation forwards into one shared method, and craft out sampling method for anchor
 
 - [ ] show an example with giving the LLM ability to hear as well, using <a href="https://github.com/lucidrains/audiolm-pytorch">hubert or wav2vec</a> wrappers
 - [ ] handle a wrapper or function that takes in the sequence and prompt length, and auto derives the inputs to CALM
