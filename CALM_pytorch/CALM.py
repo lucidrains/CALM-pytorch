@@ -1,7 +1,7 @@
 from math import ceil
 from pathlib import Path
 from functools import partial
-from contextlib import nullcontext
+from contextlib import nullcontext, contextmanager
 
 from dataclasses import dataclass
 
@@ -497,6 +497,25 @@ class CALM(Module):
 
                 augment_llm(prompt, **augment_llm_kwarg)
 
+        return prompts, prompt_masks
+
+    @contextmanager
+    def set_cross_attn_masks(self, masks):
+        # set the context mask for the cross attention
+
+        for one_cross_attn, mask in zip(self.cross_attns, masks):
+            for cross_attn in one_cross_attn:
+                cross_attn.set_mask(mask)
+
+        yield
+
+        # unset the context mask
+
+        for one_cross_attn in self.cross_attns:
+            for cross_attn in one_cross_attn:
+                cross_attn.unset_mask()
+
+
     @torch.no_grad()
     def generate(
         self,
@@ -514,38 +533,28 @@ class CALM(Module):
 
         # run forward on all the augmentation models and collect hidden states
 
-        self.forward_augments(prompt = prompt, prompt_mask = prompt_mask)
+        prompts, prompt_masks = self.forward_augments(prompt = prompt, prompt_mask = prompt_mask)
 
-        # set the context mask for the cross attention
+        with self.set_cross_attn_masks(prompt_masks):
 
-        for one_cross_attn in self.cross_attns:
-            for cross_attn in one_cross_attn:
-                cross_attn.set_mask(prompt_mask)
+            # do not release the hidden states of augmented models that were recorded
+            # until sampling is finished
 
-        # do not release the hidden states of augmented models that were recorded
-        # until sampling is finished
+            self.set_release_recorder_output(False)
 
-        self.set_release_recorder_output(False)
+            # sample
 
-        # sample
+            generated =  sample(
+                self.anchor_llm,
+                prompt,
+                seq_len = seq_len,
+                filter_fn = filter_fn,
+                filter_kwargs = filter_kwargs
+            )
 
-        generated =  sample(
-            self.anchor_llm,
-            prompt,
-            seq_len = seq_len,
-            filter_fn = filter_fn,
-            filter_kwargs = filter_kwargs
-        )
+            # release
 
-        # release
-
-        self.release_recorder_output()
-
-        # unset the context mask
-
-        for one_cross_attn in self.cross_attns:
-            for cross_attn in one_cross_attn:
-                cross_attn.unset_mask()
+            self.release_recorder_output()
 
         return generated
 
@@ -554,8 +563,8 @@ class CALM(Module):
         self,
         seq: Tensor,
         *,
-        prompt: Union[Tensor, SequenceOf(Tensor)],
-        prompt_mask: Optional[SingularOrMany(SequenceOf(Tensor))] = None,
+        prompt: SingularOrMany(Tensor),
+        prompt_mask: Optional[SingularOrMany(Tensor)] = None,
         mask: Optional[Tensor] = None,
         return_loss = True,
         anchor_llm_in_train_mode = True  # unsure about this
@@ -572,25 +581,14 @@ class CALM(Module):
 
         # run forward on all the augmentation models and collect hidden states
 
-        self.forward_augments(prompt = prompt, prompt_mask = prompt_mask)
+        prompts, prompt_masks = self.forward_augments(prompt = prompt, prompt_mask = prompt_mask)
 
-        # set the context mask for the cross attention
+        with self.set_cross_attn_masks(prompt_masks):
+            # invoke the anchor llm, which should take care of the cross attending to the augmented llm hidden states
 
-        for one_cross_attn in self.cross_attns:
-            for cross_attn in one_cross_attn:
-                cross_attn.set_mask(prompt_mask)
+            logits = self.anchor_llm(seq)
 
-        # then invoke the anchor llm, which should take care of the cross attending to the augmented llm hidden states
-
-        logits = self.anchor_llm(seq)
-
-        assert logits.ndim == 3, 'anchor llm should return logits in the shape (batch, seq, num tokens)'
-
-        # unset the context mask
-
-        for one_cross_attn in self.cross_attns:
-            for cross_attn in one_cross_attn:
-                cross_attn.unset_mask()
+            assert logits.ndim == 3, 'anchor llm should return logits in the shape (batch, seq, num tokens)'
 
         # return logits for decoding
 
