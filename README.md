@@ -71,6 +71,14 @@ loss = calm(
 )
 
 loss.backward()
+
+# after much training, prompt the composed model
+
+generated = calm.generate(
+    prompt = seq[:, :1],
+    seq_len = 1024
+)
+
 ```
 
 To use a handy trainer class using 🤗 Accelerate, just import `FineTuner` and use as follows
@@ -245,11 +253,10 @@ loss.backward()
     - [x] make simple vit work
         - [x] refactor so extraction fn, mask kwarg, and other related hparams are grouped together under a dictionary of {[augment_llm_name]: {augment_llm_related_hparams}} - use dataclasses
         - [x] show example
-
-- [ ] take care of caching the augment hiddens when sampling. forget about anchor kv cache for now
+- [x] take care of caching the augment hiddens when sampling. forget about anchor kv cache for now
     - [x] logic for not releasing the saved output from recorder, for inference
     - [x] managing cross attention block state for popping the saved output from the recorder
-    - [ ] move the augmentation forwards into one shared method, and craft out sampling method for anchor
+    - [x] move the augmentation forwards into one shared method, and craft out sampling method for anchor
 
 - [ ] show an example with giving the LLM ability to hear as well, using <a href="https://github.com/lucidrains/audiolm-pytorch">hubert or wav2vec</a> wrappers
 - [ ] handle a wrapper or function that takes in the sequence and prompt length, and auto derives the inputs to CALM

@@ -36,6 +36,11 @@ from pytorch_custom_utils.accelerate_utils import (
     model_forward_contexts
 )
 
+from CALM_pytorch.sampling_utils import (
+    sample,
+    top_p, top_k
+)
+
 # types
 
 Sequence = Union[Tuple, List]
@@ -454,27 +459,11 @@ class CALM(Module):
             if isinstance(module, CrossAttentionBlock):
                 module.recorder.release_saved_()
 
-    @beartype
-    def forward(
+    def forward_augments(
         self,
-        seq: Tensor,
-        *,
-        prompt: Union[Tensor, SequenceOf(Tensor)],
-        prompt_mask: Optional[SingularOrMany(SequenceOf(Tensor))] = None,
-        mask: Optional[Tensor] = None,
-        return_loss = True,
-        anchor_llm_in_train_mode = True  # unsure about this
+        prompt: Tensor,
+        prompt_mask: Optional[SingularOrMany(SequenceOf(Tensor))] = None
     ):
-        if return_loss:
-            self.cross_attns.train()
-
-            if anchor_llm_in_train_mode:
-                self.anchor_llm.train()
-            else:
-                self.anchor_llm.eval()
-
-            seq, labels = seq[:, :-1], seq[:, 1:]
-
         # if only one prompt is given with multiple augmentation llms, then just feed that one prompt into all augment llm
 
         num_augment_llms = len(self.augment_llms)
@@ -507,6 +496,83 @@ class CALM(Module):
                     augment_llm_kwarg = {params.mask_kwarg: prompt_mask}
 
                 augment_llm(prompt, **augment_llm_kwarg)
+
+    @torch.no_grad()
+    def generate(
+        self,
+        prompt: Tensor,
+        seq_len: int,
+        prompt_mask: Optional[SingularOrMany(SequenceOf(Tensor))] = None,
+        filter_fn: Callable = top_p,
+        filter_kwargs: dict = dict(
+            thres = 0.9
+        )
+    ):
+        batch, device = prompt.shape[0], next(self.cross_attns.parameters()).device
+
+        self.eval()
+
+        # run forward on all the augmentation models and collect hidden states
+
+        self.forward_augments(prompt = prompt, prompt_mask = prompt_mask)
+
+        # set the context mask for the cross attention
+
+        for one_cross_attn in self.cross_attns:
+            for cross_attn in one_cross_attn:
+                cross_attn.set_mask(prompt_mask)
+
+        # do not release the hidden states of augmented models that were recorded
+        # until sampling is finished
+
+        self.set_release_recorder_output(False)
+
+        # sample
+
+        generated =  sample(
+            self.anchor_llm,
+            prompt,
+            seq_len = seq_len,
+            filter_fn = filter_fn,
+            filter_kwargs = filter_kwargs
+        )
+
+        # release
+
+        self.release_recorder_output()
+
+        # unset the context mask
+
+        for one_cross_attn in self.cross_attns:
+            for cross_attn in one_cross_attn:
+                cross_attn.unset_mask()
+
+        return generated
+
+    @beartype
+    def forward(
+        self,
+        seq: Tensor,
+        *,
+        prompt: Union[Tensor, SequenceOf(Tensor)],
+        prompt_mask: Optional[SingularOrMany(SequenceOf(Tensor))] = None,
+        mask: Optional[Tensor] = None,
+        return_loss = True,
+        anchor_llm_in_train_mode = True  # unsure about this
+    ):
+        if return_loss:
+            self.cross_attns.train()
+
+            if anchor_llm_in_train_mode:
+                self.anchor_llm.train()
+            else:
+                self.anchor_llm.eval()
+
+            seq, labels = seq[:, :-1], seq[:, 1:]
+
+        # run forward on all the augmentation models and collect hidden states
+
+        self.forward_augments(prompt = prompt, prompt_mask = prompt_mask)
 
         # set the context mask for the cross attention
 
