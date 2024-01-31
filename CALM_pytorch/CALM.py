@@ -358,7 +358,7 @@ class CALM(Module):
             anchor_layer_indices = [*range(1, len(anchor_outputs) + 1, anchor_every_num_layers)]
             augment_layer_indices = [*range(1, len(augment_outputs) + 1, params.connect_every_num_layers)]
 
-            params.connections = tuple(zip(anchor_layer_indices, augment_layer_indices))
+            params.connections = tuple(zip(augment_layer_indices, anchor_layer_indices))
 
         self.connections = [params.connections for params in augment_llms_params]
 
@@ -369,7 +369,7 @@ class CALM(Module):
         for connection, params, augment_outputs in zip(self.connections, augment_llms_params, augments_outputs):
             one_num_augment_blocks = len(augment_outputs)
 
-            anchor_layer_indices, augment_layer_indices = tuple(zip(*connection))
+            augment_layer_indices, anchor_layer_indices = tuple(zip(*connection))
 
             assert all([1 <= i <= len(anchor_outputs) for i in anchor_layer_indices]), 'you specified anchor llm layers outside of actual number of layers'
             assert all([1 <= i <= len(augment_outputs) for i in augment_layer_indices]), 'you specified augment llm layers outside of actual number of layers'
@@ -466,7 +466,7 @@ class CALM(Module):
 
         for one_augment_hiddens, one_augment_cross_attns, one_augment_connections in zip(augments_hiddens, self.cross_attns, self.connections):
 
-            for (_, augment_layer_index), cross_attn in zip(one_augment_connections, one_augment_cross_attns):
+            for (augment_layer_index, _), cross_attn in zip(one_augment_connections, one_augment_cross_attns):
             
                 cross_attn.context = one_augment_hiddens[augment_layer_index - 1]
 
