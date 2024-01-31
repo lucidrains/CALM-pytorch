@@ -67,9 +67,6 @@ def xnor(x, y):
 def cast_tuple(t, length = 1):
     return t if is_bearable(t, Sequence) else ((t,) * length)
 
-def get_indices_of_src_from_tgt(src_arr, tgt_arr):
-    return [src_arr.index(el) for el in tgt_arr]
-
 def get_block_output_from_hook_outputs(
     hidden_position: HiddenPosition,
     _, inp, out
@@ -81,33 +78,6 @@ def get_block_output_from_hook_outputs(
 
     assert torch.is_tensor(maybe_tensor)
     return maybe_tensor
-
-# extract all forward inputs
-
-def extract_forward_inputs(
-    model: Module,
-    input: Tensor,
-    blocks: List[Module]
-):
-    assert len(blocks) > 0
-
-    outputs = []
-
-    def record(*args):
-        outputs.append(args)
-
-    hooks = []
-    for block in blocks:
-        hook = block.register_forward_hook(record)
-        hooks.append(hook)
-
-    with torch.no_grad():
-        model(input)
-
-    for hook in hooks:
-        hook.remove()
-
-    return outputs
 
 # freezing llms
 
@@ -138,24 +108,44 @@ class Recorder:
     @beartype
     def __init__(
         self,
+        outputs: Optional[List] = None,
         forward_hook_get_hidden: HiddenPosition = 'output'
     ):
-        self.output = None
+        self.output = default(outputs, [])
         self.get_output_fn = partial(get_block_output_from_hook_outputs, forward_hook_get_hidden)
 
     def __call__(self, *args):
-        assert not exists(self.output)
         hidden = self.get_output_fn(*args)
-        self.output = hidden.detach()
+        self.output.append(hidden.detach())
 
-    def release_saved_(self):
-        self.output = None
+class ExtractHiddensWrapper(Module):
+    @beartype
+    def __init__(
+        self,
+        model: Module,
+        blocks: List[Module],
+        hidden_positions: SingularOrMany(HiddenPosition) = 'output'
+    ):
+        super().__init__()
+        hidden_positions = cast_tuple(hidden_positions, len(blocks))
+        assert len(hidden_positions) == len(blocks)
 
-    def pop_saved_(self):
-        output = self.output
-        assert exists(output)
-        self.release_saved_()
-        return output
+        self.model = model
+
+        self.outputs = []
+        self.recorders = []
+
+        for block, hidden_position in zip(blocks, hidden_positions):
+            recorder = Recorder(self.outputs, hidden_position)
+            self.recorders.append(recorder)
+            block.register_forward_hook(recorder)
+
+    def forward(self, *args, **kwargs):
+        self.model(*args, **kwargs)
+
+        outputs = self.outputs.copy()
+        self.outputs.clear()
+        return outputs
 
 # cross attention wrapper class
 
@@ -165,7 +155,6 @@ class CrossAttentionBlock(Module):
         self,
         dim,
         dim_context,
-        recorder: Recorder,
         linear_project_context = True,  # in the paper, they do a projection on the augmented hidden states. not sure if this is needed though, but better to be accurate first
         pre_rmsnorm = False,
         forward_hook_get_hidden: Union[
@@ -177,7 +166,6 @@ class CrossAttentionBlock(Module):
         super().__init__()
         self.pre_rmsnorm = RMSNorm(dim) if pre_rmsnorm else nn.Identity()
 
-        self.recorder = recorder
         self.context_proj = None
 
         self.dim = dim
@@ -195,12 +183,9 @@ class CrossAttentionBlock(Module):
             **kwargs
         )
 
+        self.context = None
         self.context_mask = None
         self.forward_hook_get_hidden = forward_hook_get_hidden
-        self.release_recorder_output = True
-
-    def set_release_recorder_output(self, release_recorder_output: bool):
-        self.release_recorder_output = release_recorder_output
 
     def set_mask(self, mask: Tensor):
         self.context_mask = mask
@@ -211,11 +196,7 @@ class CrossAttentionBlock(Module):
     def forward(self, *hook_args):
         x = get_block_output_from_hook_outputs(self.forward_hook_get_hidden, *hook_args)
 
-        if self.release_recorder_output:
-            context = self.recorder.pop_saved_()
-        else:
-            context = self.recorder.output
-
+        context = self.context
         assert exists(context)
 
         maybe_enable_grad = torch.enable_grad if self.training else nullcontext
@@ -239,6 +220,7 @@ class AugmentParams:
     hidden_position: SingularOrMany(HiddenPosition) = 'output'
     transformer_blocks: Optional[List[Module]] = None
     extract_blocks_fn: Optional[Callable[[Module], List[Module]]] = None
+    model_return_hiddens: bool = False
     input_shape: Optional[Tuple[int, ...]] = None
     connections: Optional[Tuple[Tuple[int, int], ...]] = None
     connect_every_num_layers: int = 4 # in the paper, they do 4
@@ -268,16 +250,8 @@ class CALM(Module):
 
         augment_llms_params = augment_llms
 
-        # main contribution of paper
-        # is showing that both anchor and augment can be frozen, and that cross attention from anchor -> augment every few layers outperforms lora
-
         self.anchor_llm = anchor_llm
-        self.augment_llms = nn.ModuleList([params.model for params in augment_llms_params])
-
-        freeze_all_layers_(self.anchor_llm)
-        freeze_all_layers_(self.augment_llms)
-
-        num_augment_llms = len(self.augment_llms)
+        self.augment_llms = nn.ModuleList([])
 
         # the only parameters being learned are a bunch of cross attention layers
         # attending from anchor to augmentation model(s)
@@ -290,21 +264,51 @@ class CALM(Module):
         if not exists(anchor_transformer_blocks):
             get_anchor_blocks_fn = x_transformer_blocks if isinstance(anchor_llm, TransformerWrapper) else anchor_extract_blocks_fn
             anchor_transformer_blocks = get_anchor_blocks_fn(self.anchor_llm)
-            anchor_hidden_position = cast_tuple(anchor_hidden_position, len(anchor_transformer_blocks))
-            assert len(anchor_transformer_blocks) == len(anchor_hidden_position)
+
+        anchor_hidden_position = cast_tuple(anchor_hidden_position, len(anchor_transformer_blocks))
+        assert len(anchor_transformer_blocks) == len(anchor_hidden_position)
+
+        # wrap each augment llm with a wrapper that extracts the hiddens
+        # if the augment llm is already modified to return a List[Tensor], set model_return_hiddens = True
+
+        wrapped_anchor_llm = ExtractHiddensWrapper(
+            anchor_llm,
+            anchor_transformer_blocks,
+            anchor_hidden_position
+        )
 
         for params in augment_llms_params:
-            if exists(params.transformer_blocks):
+
+            if params.model_return_hiddens:
+                self.augment_llms.append(params.model)
                 continue
 
-            extract = default(params.extract_blocks_fn, x_transformer_blocks if isinstance(params.model, TransformerWrapper) else None)
+            if not exists(params.transformer_blocks):
+                extract = default(params.extract_blocks_fn, x_transformer_blocks if isinstance(params.model, TransformerWrapper) else None)
 
-            assert exists(extract)
+                assert exists(extract)
 
-            params.transformer_blocks = extract(params.model)
+                params.transformer_blocks = extract(params.model)
+
             params.hidden_position = cast_tuple(params.hidden_position, len(params.transformer_blocks))
 
             assert len(params.hidden_position) == len(params.transformer_blocks)
+
+            wrapped_augment_llm = ExtractHiddensWrapper(
+                params.model,
+                params.transformer_blocks,
+                params.hidden_position
+            )
+
+            self.augment_llms.append(wrapped_augment_llm)
+
+        # main contribution of paper
+        # is showing that both anchor and augment can be frozen, and that cross attention from anchor -> augment every few layers outperforms lora
+
+        freeze_all_layers_(self.anchor_llm)
+        freeze_all_layers_(self.augment_llms)
+
+        num_augment_llms = len(self.augment_llms)
 
         # extract all forward outputs from all transformer blocks
         # for sanitizing the input (making sure transformer blocks are ordered by execution)
@@ -325,28 +329,15 @@ class CALM(Module):
             recording_inputs.append(inp)
 
         all_blocks = [anchor_transformer_blocks, *[params.transformer_blocks for params in augment_llms_params]]
-        all_models = [anchor_llm, *self.augment_llms]
+        all_models = [wrapped_anchor_llm, *self.augment_llms]
 
-        all_outputs = [extract_forward_inputs(model, recording_input, blocks) for model, recording_input, blocks in zip(all_models, recording_inputs, all_blocks)]
+        all_outputs = [model(recording_input) for model, recording_input in zip(all_models, recording_inputs)]
 
         num_anchor_blocks, *num_augment_blocks = [*map(len, all_outputs)]
 
         assert num_anchor_blocks > 0 and all([n > 0 for n in num_augment_blocks]), 'no layers found in either anchor or augment attention networks'
 
         anchor_outputs, *augments_outputs = all_outputs
-
-        # make sure the hidden positions are reordered based on the execution order
-
-        all_blocks = [*map(lambda outputs: [block for block, *_ in outputs],all_outputs)]
-        anchor_blocks, *augments_blocks = all_blocks
-
-        anchor_reorder_indices = get_indices_of_src_from_tgt(anchor_transformer_blocks, anchor_blocks)
-        augments_reorder_indices = [get_indices_of_src_from_tgt(params.transformer_blocks, augment_blocks) for params, augment_blocks in zip(augment_llms_params, augments_blocks)]
-
-        anchor_hidden_position = [anchor_hidden_position[i] for i in anchor_reorder_indices]
-
-        for params, augment_reorder_indices in zip(augment_llms_params, augments_reorder_indices):
-            params.hidden_position = [params.hidden_position[i] for i in augment_reorder_indices]
 
         # calculation for determining every Nth layer of augmentation layer hiddens is attended to
         # in paper, they did every 4th layer of 1 augmentation llm
@@ -383,52 +374,27 @@ class CALM(Module):
             assert all([1 <= i <= len(anchor_outputs) for i in anchor_layer_indices]), 'you specified anchor llm layers outside of actual number of layers'
             assert all([1 <= i <= len(augment_outputs) for i in augment_layer_indices]), 'you specified augment llm layers outside of actual number of layers'
 
-            one_anchor_outputs_and_positions = [(anchor_outputs[i - 1], anchor_hidden_position[i - 1]) for i in anchor_layer_indices]
-            one_augment_outputs_and_positions = [(augment_outputs[i - 1], params.hidden_position[i - 1]) for i in augment_layer_indices]
+            anchor_blocks = [anchor_transformer_blocks[i - 1] for i in anchor_layer_indices]
+            one_anchor_outputs = [anchor_outputs[i - 1] for i in anchor_layer_indices]
+            one_anchor_positions = [anchor_hidden_position[i - 1] for i in anchor_layer_indices]
+            one_augment_outputs = [augment_outputs[i - 1] for i in augment_layer_indices]
 
-            anchor_to_augment_outputs.append(
-                (one_anchor_outputs_and_positions, one_augment_outputs_and_positions)
-            )
-
-        # function for getting output or input dimension
-        # depending on get_hidden_position
-
-        def get_hidden_dim(hook_output, position: HiddenPosition):
-            maybe_tensor = get_block_output_from_hook_outputs(position, *hook_output)
-            return maybe_tensor.shape[-1]
-
-        # instantiate cross attentions
-
-        for (one_anchor_outputs_and_positions, one_augment_outputs_and_positions), params in zip(anchor_to_augment_outputs, augment_llms_params):
-
-            augment_llm, augment_position = params.model, params.hidden_position
-
-            # number of cross attention for one augmentation llm
-
-            num_cross_attns = min(len(one_augment_outputs_and_positions), len(one_anchor_outputs_and_positions))
+            num_cross_attns = min(len(one_anchor_outputs), len(one_augment_outputs))
 
             # get anchor dims
 
-            anchor_dims = [get_hidden_dim(one_anchor_output, one_anchor_position) for one_anchor_output, one_anchor_position in one_anchor_outputs_and_positions]
-            augment_dims = [get_hidden_dim(one_augment_output, one_augment_position) for one_augment_output, one_augment_position in one_augment_outputs_and_positions]
+            anchor_dims = [one_anchor_output.shape[-1] for one_anchor_output in one_anchor_outputs]
+            augment_dims = [one_augment_output.shape[-1] for one_augment_output in one_augment_outputs]
 
-            # cross attentions for one augmentation llm
+            # cross attentions for one augment llm
 
-            recorders = []
             one_augment_llm_cross_attns = ModuleList([])
 
-            for dim_anchor, dim_augment, (_, anchor_position), (_, augment_position) in zip(anchor_dims, augment_dims, one_anchor_outputs_and_positions, one_augment_outputs_and_positions):
-                recorder = Recorder(forward_hook_get_hidden = augment_position)
-                recorders.append(recorder)
-                one_augment_llm_cross_attns.append(CrossAttentionBlock(dim = dim_anchor, dim_context = dim_augment, recorder = recorder, forward_hook_get_hidden = anchor_position, **attn_kwargs))
+            for dim_anchor, dim_augment, anchor_position in zip(anchor_dims, augment_dims, one_anchor_positions):
+                one_augment_llm_cross_attns.append(CrossAttentionBlock(dim = dim_anchor, dim_context = dim_augment, forward_hook_get_hidden = anchor_position, **attn_kwargs))
 
-            # connect the two models
-
-            for ((anchor_block, *_), *_), recorder, cross_attn, ((augment_block, *_), *_) in zip(one_anchor_outputs_and_positions, recorders, one_augment_llm_cross_attns, one_augment_outputs_and_positions):
-                augment_block.register_forward_hook(recorder)
+            for anchor_block, cross_attn in zip(anchor_blocks, one_augment_llm_cross_attns):
                 anchor_block.register_forward_hook(cross_attn)
-
-            # add to cross_attns
 
             self.cross_attns.append(one_augment_llm_cross_attns)
 
@@ -449,15 +415,10 @@ class CALM(Module):
     def parameters(self):
         return self.cross_attns.parameters()
 
-    def set_release_recorder_output(self, release_recorder_output: bool):
-        for module in self.modules():
-            if isinstance(module, CrossAttentionBlock):
-                module.release_recorder_output = release_recorder_output
-
-    def clear_recorded_augment_hiddens(self):
-        for module in self.modules():
-            if isinstance(module, CrossAttentionBlock):
-                module.recorder.release_saved_()
+    def release_cross_attn_contexts(self):
+        for one_augment_cross_attns in self.cross_attns:
+            for cross_attn in one_augment_cross_attns:
+                cross_attn.context = None
 
     def forward_augments(
         self,
@@ -485,6 +446,8 @@ class CALM(Module):
 
         # invoke the augment llm, gathering up the hidden states with the forward hook
 
+        augments_hiddens = []
+
         with torch.no_grad():
 
             self.augment_llms.eval()
@@ -495,7 +458,17 @@ class CALM(Module):
                 if exists(params.mask_kwarg):
                     augment_llm_kwarg = {params.mask_kwarg: prompt_mask}
 
-                augment_llm(prompt, **augment_llm_kwarg)
+                one_augment_hiddens = augment_llm(prompt, **augment_llm_kwarg)
+
+                augments_hiddens.append(one_augment_hiddens)
+
+        # set the contexts for each cross attention block for anchor forward
+
+        for one_augment_hiddens, one_augment_cross_attns, one_augment_connections in zip(augments_hiddens, self.cross_attns, self.connections):
+
+            for (_, augment_layer_index), cross_attn in zip(one_augment_connections, one_augment_cross_attns):
+            
+                cross_attn.context = one_augment_hiddens[augment_layer_index - 1]
 
         return prompts, prompt_masks
 
@@ -537,11 +510,6 @@ class CALM(Module):
 
         with self.set_cross_attn_masks(prompt_masks):
 
-            # do not release the hidden states of augmented models that were recorded
-            # until sampling is finished
-
-            self.set_release_recorder_output(False)
-
             # sample
 
             generated =  sample(
@@ -552,9 +520,7 @@ class CALM(Module):
                 filter_kwargs = filter_kwargs
             )
 
-            # release
-
-            self.release_recorder_output()
+            self.release_cross_attn_contexts()
 
         return generated
 
@@ -587,6 +553,8 @@ class CALM(Module):
             # invoke the anchor llm, which should take care of the cross attending to the augmented llm hidden states
 
             logits = self.anchor_llm(seq)
+
+            self.release_cross_attn_contexts()
 
             assert logits.ndim == 3, 'anchor llm should return logits in the shape (batch, seq, num tokens)'
 
