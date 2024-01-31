@@ -120,17 +120,17 @@ calm = CALM(
         AugmentParams(
             model = augment_llm1,
             connections = (
-                (12, 1),  # 12th layer of anchor attends to 1st layer of augment llm1
-                (12, 2),
-                (12, 3),
-                (12, 4),
+                (1, 12),  # 1st layer of augment llm1 attended to by 12th layer of anchor llm
+                (2, 12),
+                (3, 12),
+                (4, 12),
             ),
         ),
         AugmentParams(
             model = augment_llm2,
             connections = (
-                (1, 6), # 1st layer of anchor attends to 6th layer of augment llm2
-                (2, 6),
+                (6, 1),   # 6th layer of augment llm2 attended to by 1st layer of anchor llm
+                (6, 2),
                 (12, 12),
             )
         )
