@@ -109,12 +109,18 @@ class Recorder:
     def __init__(
         self,
         outputs: Optional[List] = None,
-        forward_hook_get_hidden: HiddenPosition = 'output'
+        forward_hook_get_hidden: HiddenPosition = 'output',
+        modules: Optional[List] = None,
     ):
         self.output = default(outputs, [])
+        self.modules = modules
         self.get_output_fn = partial(get_block_output_from_hook_outputs, forward_hook_get_hidden)
 
     def __call__(self, *args):
+
+        if exists(self.modules):
+            self.modules.append(args[0])
+
         hidden = self.get_output_fn(*args)
         self.output.append(hidden.detach())
 
@@ -133,19 +139,27 @@ class ExtractHiddensWrapper(Module):
         self.model = model
 
         self.outputs = []
+        self.modules = []
         self.recorders = []
 
         for block, hidden_position in zip(blocks, hidden_positions):
-            recorder = Recorder(self.outputs, hidden_position)
+            recorder = Recorder(self.outputs, hidden_position, self.modules)
             self.recorders.append(recorder)
             block.register_forward_hook(recorder)
 
-    def forward(self, *args, **kwargs):
+    def forward(self, *args, return_hooked_modules = False, **kwargs):
         self.model(*args, **kwargs)
 
         outputs = self.outputs.copy()
+        modules = self.modules.copy()
+
         self.outputs.clear()
-        return outputs
+        self.modules.clear()
+
+        if not return_hooked_modules:
+            return outputs
+
+        return outputs, modules
 
 # cross attention wrapper class
 
@@ -271,11 +285,23 @@ class CALM(Module):
         # wrap each augment llm with a wrapper that extracts the hiddens
         # if the augment llm is already modified to return a List[Tensor], set model_return_hiddens = True
 
+        default_transformer_input = torch.ones((1, 1), dtype = torch.long)
+
         wrapped_anchor_llm = ExtractHiddensWrapper(
             anchor_llm,
             anchor_transformer_blocks,
             anchor_hidden_position
         )
+
+        # order the anchor transformer blocks by their execution order
+        # there is not a guarantee that the function or list of modules provided is in the right order
+        # just remove that gotcha
+
+        _, anchor_transformer_blocks = wrapped_anchor_llm(default_transformer_input, return_hooked_modules = True)
+
+        assert len(anchor_transformer_blocks) > 0
+
+        # process each augment llm and wrap them if necessary
 
         for params in augment_llms_params:
 
@@ -313,8 +339,6 @@ class CALM(Module):
         # extract all forward outputs from all transformer blocks
         # for sanitizing the input (making sure transformer blocks are ordered by execution)
         # and for magically determining hidden dimensions for cross attention
-
-        default_transformer_input = torch.ones((1, 1), dtype = torch.long)
 
         recording_inputs = [default_transformer_input]
 
